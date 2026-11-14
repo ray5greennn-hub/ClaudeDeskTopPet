@@ -1,0 +1,3 @@
+# exe 和 zip 只放在 Release 页面，不进仓库
+*.exe
+*.zip
