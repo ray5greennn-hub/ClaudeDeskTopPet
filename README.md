@@ -51,6 +51,12 @@ Open the `源代码` folder and double-click `build.bat`. It uses the C# compile
 Unofficial fan-made project (fan work), not affiliated with Anthropic. Completely free and open source — made just for fun.
 "Claude" and its character belong to Anthropic.
 
+## 许可证 / License
+
+本项目代码以 **[GPL-3.0](LICENSE)** 发布：可以自由使用、修改和分享，但修改后再发布的版本也必须以 GPL-3.0 开源。
+
+The code is licensed under **[GPL-3.0](LICENSE)**: free to use, modify and share, but any modified version you distribute must also be open source under GPL-3.0.
+
 ---
 
 By 雷茂教主Ray5Green

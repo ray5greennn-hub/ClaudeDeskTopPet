@@ -1,4 +1,7 @@
 ﻿// Claude 桌宠 —— 单文件 C# WinForms 程序
+// Copyright (C) 2026 雷茂教主Ray5Green
+// 本程序以 GPL-3.0 发布，详见仓库根目录的 LICENSE 文件。
+// This program is free software under the GNU General Public License v3.0 — see LICENSE.
 using System;
 using System.Collections.Generic;
 using System.Drawing;

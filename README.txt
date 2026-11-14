@@ -43,6 +43,10 @@
   完全免费、开源，做着玩的，欢迎随意游玩和分享。
   “Claude”名称及其形象归 Anthropic 所有。
 
+▶ 许可证
+  代码以 GPL-3.0 发布（见 LICENSE 文件）：可以自由使用、修改和分享，
+  但修改后再发布的版本也必须以 GPL-3.0 开源。
+
 
 【English】
 
@@ -73,6 +77,10 @@
   Unofficial fan-made project (fan work), not affiliated with Anthropic.
   Completely free and open source — made just for fun. Feel free to play and share.
   "Claude" and its character belong to Anthropic.
+
+▶ License
+  The code is licensed under GPL-3.0 (see the LICENSE file): free to use, modify and share,
+  but any modified version you distribute must also be open source under GPL-3.0.
 
 
                                         By 雷茂教主Ray5Green
