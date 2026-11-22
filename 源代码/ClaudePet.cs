@@ -1,4 +1,4 @@
-﻿// Claude 桌宠 —— 单文件 C# WinForms 程序
+// Claude 桌宠 —— 单文件 C# WinForms 程序
 // Copyright (C) 2026 雷茂教主Ray5Green
 // 本程序以 GPL-3.0 发布，详见仓库根目录的 LICENSE 文件。
 // This program is free software under the GNU General Public License v3.0 — see LICENSE.
@@ -24,11 +24,13 @@ static class Program
         Application.EnableVisualStyles();
         if (args.Length == 2 && args[0] == "--render") { PetForm.Render(args[1]); return; }
         if (args.Length == 2 && args[0] == "--render-settings") { PetForm.RenderSettings(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--render-idles") { PetForm.RenderIdles(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--render-meal") { MealForm.RenderSelf(args[1]); return; }
         Application.Run(new PetForm());
     }
 }
 
-enum St { Fall, Jump, Walk, Idle, Sleep, Computer, Cling, Dance, Bubble, Stretch, Eat, Bye, GoNest, Gift, Play, Bath, Frozen }
+enum St { Fall, Jump, Walk, Idle, Sleep, Computer, Cling, Dance, Bubble, Stretch, Eat, Bye, GoNest, Gift, Play, Bath, Frozen, GoWater, Water, Meal, Nest }
 
 class Particle
 {
@@ -44,6 +46,11 @@ class Particle
 class NestLook
 {
     internal int Type, Color, Pattern, Decor = 2, FlagColor, PlushL, PlushR;
+    // 背景：场景、墙纸颜色、房间装饰、户外装饰、天气（0 = 自动）
+    internal int Bg, Wall, RoomDecor = 3, OutDecor = 7, Weather;
+    internal int Light = 1; internal bool LampOn = true;
+    internal int GlowAlpha = 70, GlowSpread = 50, GlowSize = 50, GlowColor;
+    internal bool GlowOn = true; internal int BgAlpha = 100;   // 小窝发光开关、背景透明度   // 小窝自带的主灯光   // 灯光：0 关 1 自动 2 一直开；落地灯开没开
     internal NestLook Clone() { return (NestLook)MemberwiseClone(); }
 }
 
@@ -62,7 +69,18 @@ class PetForm : Form
     float px, py, vx, vy;
     int timer = 60, frame, tick, blink, happy, squash;
     int boost, hot, shake, full, lookDir, shiny;
-    int foodIdx, bites, eatTick; float foodY;
+    int foodIdx, bites, eatTick;
+    float foodT, foodFromX, foodFromY;   // 食物飞到嘴边的进度（0..1）和起点
+    List<int> meal = new List<int>(); int mealPos; int[] pendingMeal;   // 套餐
+    MealForm mealForm;
+    int giftAnim; bool giftDone;
+    // 平时的小动作（St.Idle）：1 思考 2 溜溜球 3 喝热茶 4 蹦蹦跳跳 5 扫地 6 打招呼 7 打喷嚏
+    // 贴墙时的待机（St.Cling 停住时）：1 张望 2 挥手 3 打盹 4 晃腿 5 哼歌 6 吃饼干
+    int idleAct, clingAct, actT;
+    // 在小窝里醒着做事：1 电脑 2 零食 3 看书 4 游戏机 5 看电影 6 听歌（0 = 睡觉）
+    int nestAct, nestActT, nestAwake, nestSnack, nestBite; bool nestGoAwake, nestDraw;
+    int movieGenre, nestReactT, tearT, scareT, nestFedPrev; bool nestFed, nestMealOn;
+    List<int> nestQueue = new List<int>();   // 在窝里吃的套餐，一样一样来   // 看电影的类型（让玩家猜）、喂进来的零食          // 拆礼物的小动画
     bool drag, dragMoved;
     float offX, offY; Point down;
     int rot;            // 当前绘制朝向：0 正常, -1 脚朝左, 1 脚朝右
@@ -191,7 +209,9 @@ class PetForm : Form
     // 食物特效
     int iceStreak, lastIceTick, frozenT, iceHP, shiver, bloat, milkT, sourT, seedT, coolT, rainbow, hiccups;
     // 退出动画：睡觉时 / 洗澡时
-    int quitT; bool sleepyBye, bathBye;
+    int quitT; bool sleepyBye, bathBye, nestBye;
+    // 摸头：鼠标在头上来回晃
+    float petScore; int lastPetX, lastPetSign, pettedT, blushT, lastPetSay = -9999;
     internal bool Quitting { get { return quitT > 0 || state == St.Bye; } }
     bool chasing;
 
@@ -247,6 +267,19 @@ class PetForm : Form
                         case "flagColor": Look.FlagColor = Clamp(I(v, 0), NestForm.FlagColors.Length); break;
                         case "plushL": Look.PlushL = Clamp(I(v, 0), NestForm.PlushZh.Length); break;
                         case "plushR": Look.PlushR = Clamp(I(v, 0), NestForm.PlushZh.Length); break;
+                        case "bg": Look.Bg = Clamp(I(v, 0), BackdropForm.SceneZh.Length); break;
+                        case "bgWall": Look.Wall = Clamp(I(v, 0), BackdropForm.WallColors.Length); break;
+                        case "bgRoom": Look.RoomDecor = I(v, 3) & 255; break;
+                        case "bgOut": Look.OutDecor = I(v, 7) & 511; break;
+                        case "glowOn": Look.GlowOn = v != "0"; break;
+                        case "bgA": Look.BgAlpha = Math.Max(10, Math.Min(100, I(v, 100))); break;
+                        case "glowA": Look.GlowAlpha = Math.Max(0, Math.Min(100, I(v, 70))); break;
+                        case "glowS": Look.GlowSpread = Math.Max(0, Math.Min(100, I(v, 50))); break;
+                        case "glowR": Look.GlowSize = Math.Max(0, Math.Min(100, I(v, 50))); break;
+                        case "glowC": Look.GlowColor = Clamp(I(v, 0), LightForm.GlowColors.Length); break;
+                        case "light": Look.Light = Clamp(I(v, 1), 3); break;
+                        case "lamp": Look.LampOn = v != "0"; break;
+                        case "weather": Look.Weather = Clamp(I(v, 0), BackdropForm.WeatherZh.Length); break;
                         case "nestX": nestX = I(v, int.MinValue); break;
                         case "nestY": nestY = I(v, 0); break;
                     }
@@ -271,7 +304,10 @@ class PetForm : Form
                 + "\nlang=" + (En ? "en" : "zh") + "\nnest=" + (NestOn ? "1" : "0")
                 + "\nnestType=" + Look.Type + "\nnestColor=" + Look.Color + "\nnestSkin=" + Look.Pattern
                 + "\nnestDecor=" + Look.Decor + "\nflagColor=" + Look.FlagColor
-                + "\nplushL=" + Look.PlushL + "\nplushR=" + Look.PlushR;
+                + "\nplushL=" + Look.PlushL + "\nplushR=" + Look.PlushR
+                + "\nbg=" + Look.Bg + "\nbgWall=" + Look.Wall + "\nbgRoom=" + Look.RoomDecor + "\nbgOut=" + Look.OutDecor + "\nweather=" + Look.Weather
+                + "\nglowOn=" + (Look.GlowOn ? "1" : "0") + "\nbgA=" + Look.BgAlpha + "\nglowA=" + Look.GlowAlpha + "\nglowS=" + Look.GlowSpread + "\nglowR=" + Look.GlowSize + "\nglowC=" + Look.GlowColor
+                + "\nlight=" + Look.Light + "\nlamp=" + (Look.LampOn ? "1" : "0");
             if (nestX != int.MinValue) s += "\nnestX=" + nestX + "\nnestY=" + nestY;
             File.WriteAllText(Path.Combine(CfgDir, "config.txt"), s + "\n");
         }
@@ -300,6 +336,7 @@ class PetForm : Form
     {
         if (En == en) return;
         En = en; SaveConfig(); BuildMenu(); RefreshSettings();
+        if (mealForm != null && !mealForm.IsDisposed) mealForm.Close();
         if (bath != null) bath.Invalidate();
     }
 
@@ -310,7 +347,66 @@ class PetForm : Form
         if (on) ShowNest(true); else HideNest();
         SaveConfig(); RefreshSettings();
     }
-    internal void NestLookChanged() { SaveConfig(); if (nest != null) nest.Invalidate(); RefreshSettings(); }
+    internal void NestLookChanged() { SaveConfig(); if (nest != null) nest.Invalidate(); UpdateBackdrop(); RefreshSettings(); }
+
+    // ---------- 背景 ----------
+    BackdropForm backdrop;
+    int autoWeather = 1, nextWeatherTick = 9000;
+    internal int Tick { get { return tick; } }
+    internal int Weather { get { return Look.Weather == 0 ? autoWeather : Look.Weather; } }
+    void UpdateBackdrop()
+    {
+        bool want = Look.Bg > 0 && nest != null && !nest.IsDisposed && nest.Visible;
+        if (!want) { if (backdrop != null && !backdrop.IsDisposed) backdrop.Hide(); return; }
+        if (backdrop == null || backdrop.IsDisposed) backdrop = new BackdropForm(this, SZ);
+        SyncBackdrop();
+        backdrop.Opacity = Look.BgAlpha / 100.0;
+        if (!backdrop.Visible) backdrop.Show();
+        backdrop.Invalidate();
+        RaiseZ();
+    }
+    internal void ToggleLamp()
+    {
+        Look.LampOn = !Look.LampOn; SaveConfig();
+        if (backdrop != null) backdrop.Invalidate();
+        UpdateLight(); RaiseZ();   // 点完灯，层级重新排好：灯光 > Claude > 小窝 > 背景
+        RefreshSettings();
+    }
+
+    // ---------- 灯光（单独一层，盖在 Claude 上面，鼠标可以穿过） ----------
+    LightForm light;
+    int nextThunder = 300;
+    internal void GlowChanged() { SaveConfig(); }
+    internal void BgAlphaChanged() { SaveConfig(); if (backdrop != null && !backdrop.IsDisposed) backdrop.Opacity = Look.BgAlpha / 100.0; }   // 灯光层下一帧自己会重画
+    internal float PreviewDark { get { return Look.Light == 0 ? 0 : Math.Max(0.35f, Darkness()); } }
+    float Darkness()
+    {
+        if (Look.Light == 0) return 0;
+        if (Look.Light == 2 || Look.Bg == 3) return 0.45f;
+        int h = DateTime.Now.Hour;
+        if (h >= 19 || h < 6) return 0.42f;   // 天黑了
+        switch (Weather) { case 3: return 0.35f; case 2: return 0.2f; case 4: return 0.1f; }
+        return 0;
+    }
+    void UpdateLight()
+    {
+        bool nestOk = nest != null && !nest.IsDisposed && nest.Visible;
+        float dk = nestOk ? Darkness() : 0;
+        bool lamp = nestOk && Look.Bg == 1 && (Look.RoomDecor & 8) != 0 && Look.LampOn;
+        if (dk <= 0 && !lamp) { if (light != null && !light.IsDisposed && light.Visible) light.Hide(); return; }
+        if (light == null || light.IsDisposed) light = new LightForm(SZ);
+        int x = (int)(nest.x + nest.Width / 2 - light.Width / 2), y = (int)(nest.y + nest.Height - light.Height);
+        bool fresh = !light.Visible;
+        light.Render(Look, dk, lamp, (tick / 15) % 3, x, y);
+        if (fresh) { light.Show(); RaiseZ(); }
+    }
+
+    void SyncBackdrop()
+    {
+        if (backdrop == null || backdrop.IsDisposed || nest == null) return;
+        Point p = new Point((int)(nest.x + nest.Width / 2 - backdrop.Width / 2), (int)(nest.y + nest.Height - backdrop.Height));
+        if (backdrop.Location != p) backdrop.Location = p;
+    }
     internal void GoSleepNow() { GoSleep(); }
 
     // 只用于预览：用指定大小、指定装扮画一只站着的 Claude
@@ -321,7 +417,71 @@ class PetForm : Form
         return bmp;
     }
     internal void DrawSleeper(Graphics g, int sz, int[] fit) { DrawPose(g, sz, fit, St.Sleep, false); }
-    internal void DrawBather(Graphics g, int sz, int[] fit, bool closedEyes) { DrawPose(g, sz, fit, St.Idle, closedEyes); }
+    internal int NestLift(int sz) { return state == St.Nest ? -(3 * sz / 2) : 0; }   // 醒着时坐起来
+    internal void DrawNester(Graphics g, int sz, int[] fit)
+    {
+        if (state != St.Nest) { DrawSleeper(g, sz, fit); return; }
+        int sSZ = SZ, sl = lookDir; int[] sFit = outfit;
+        SZ = sz; outfit = fit; rot = 0; ox = 0; oy = 0; lookDir = 0;
+        state = St.Idle; nestDraw = true;
+        DrawBody(g, 0);   // 手上的东西在 DrawBody 里一起画，跟着身体一起起伏
+        state = St.Nest; nestDraw = false; SZ = sSZ; outfit = sFit; lookDir = sl; ox = 0; oy = 0;
+    }
+    Color MovieGlow()
+    {
+        switch (movieGenre)
+        {
+            case 0: return Color.FromArgb(255, 220, 120);                                           // 喜剧：暖黄
+            case 1: return (tick / 5) % 9 == 0 ? Color.White : Color.FromArgb(150, 40, 55);          // 恐怖：暗红，偶尔一闪
+            case 2: return Color.FromArgb(120, 160, 255);                                           // 悲伤：蓝
+            case 3: return Color.FromArgb(255, 150, 200);                                           // 爱情：粉
+            default: return (tick / 6) % 2 == 0 ? Color.FromArgb(255, 160, 60) : Color.FromArgb(255, 235, 180);   // 动作：橙色闪
+        }
+    }
+    // 窝里抱在怀里的东西（半格坐标，画在身体里，跟着起伏）
+    void DrawNestProp(Graphics g)
+    {
+        int B = 2 * TOP, half = SZ / 2, b = TOP;
+        switch (nestAct)
+        {
+            case 1: case 5:   // 抱着笔记本电脑（背面朝外），屏幕的光照在脸上；看电影时光会跟着剧情变色
+                {
+                    Color gc = nestAct == 5 ? MovieGlow() : Color.FromArgb(150, 205, 255);
+                    int a = nestAct == 5 ? 34 + 10 * ((tick / 7) % 3) : 16 + 8 * ((tick / 6) % 3);
+                    using (Brush glow = new SolidBrush(Color.FromArgb(a, gc))) R(g, glow, 3 * SZ, (b + 1) * SZ, 6 * SZ, 2 * SZ);
+                    H(g, nestAct == 5 ? C(175, 180, 195) : C(70, 72, 85), 4, B + 6, 16, 4);
+                    H(g, nestAct == 5 ? C(145, 150, 165) : C(52, 54, 64), 4, B + 6, 16, 1);
+                    H(g, (tick / 12) % 2 == 0 ? Brushes.White : C(170, 205, 255), 11, B + 8, 2, 1);
+                }
+                break;
+            case 2:   // 抱着零食啃
+                {
+                    int fp = FoodPx(), mh = half + (int)Math.Round((1 + Math.Sin(TAU * ((tick / 2) % 5) / 5)) / 2 * half);
+                    R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, mh);
+                    DrawArt(g, Foods[nestSnack], 6 * SZ - 4 * fp + ox, (b + 3) * SZ + oy, fp, Math.Min(6, nestBite * 2));
+                }
+                break;
+            case 3:   // 抱着一本摊开的书，过一会儿翻一页
+                H(g, C(90, 130, 200), 4, B + 6, 16, 4);
+                H(g, Brushes.White, 5, B + 6, 7, 3); H(g, Brushes.White, 12, B + 6, 7, 3);
+                H(g, C(175, 175, 190), 6, B + 7, 5, 1); H(g, C(175, 175, 190), 13, B + 7, 5, 1);
+                if (tick % 150 < 12) H(g, Brushes.White, 9 + (tick % 150) / 2, B + 4, 1, 2);   // 翻起来的那一页
+                break;
+            case 4:   // 掌机（背面），左蓝右红的手柄
+                using (Brush glow = new SolidBrush(Color.FromArgb(22, ((tick / 5) % 3) * 100, 200, 255 - ((tick / 5) % 3) * 80)))
+                    R(g, glow, 3 * SZ, (b + 1) * SZ, 6 * SZ, 2 * SZ);
+                H(g, C(60, 62, 72), 7, B + 7, 10, 3);
+                H(g, C(70, 150, 230), 4, B + 7, 3, 3);
+                H(g, C(235, 80, 80), 17, B + 7, 3, 3);
+                break;
+            case 6:   // 戴着耳机听歌
+                H(g, C(60, 60, 70), 5, B - 1, 14, 1);
+                H(g, C(60, 60, 70), 4, B, 1, 2); H(g, C(60, 60, 70), 19, B, 1, 2);
+                H(g, C(240, 90, 120), 3, B + 2, 2, 3); H(g, C(240, 90, 120), 19, B + 2, 2, 3);
+                if ((tick / 10) % 2 == 0) R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, half);
+                break;
+        }
+    }    internal void DrawBather(Graphics g, int sz, int[] fit, bool closedEyes) { DrawPose(g, sz, fit, St.Idle, closedEyes); }
 
     // 临时换成指定姿势画一遍，画完恢复
     void DrawPose(Graphics g, int sz, int[] fit, St st, bool closedEyes)
@@ -345,10 +505,14 @@ class PetForm : Form
     }
 
     // ---------- 像素画（食物 / 礼物 / 玩偶）----------
-    static readonly string[] FoodZh = { "苹果", "饼干", "蛋糕", "寿司", "披萨", "咖啡", "辣椒", "冰淇淋", "西瓜", "甜甜圈", "汉堡", "棒棒糖", "牛奶", "柠檬", "爆米花", "薄荷糖" };
-    static readonly string[] FoodEn = { "Apple", "Cookie", "Cake", "Sushi", "Pizza", "Coffee", "Chili", "Ice cream", "Watermelon", "Donut", "Burger", "Lollipop", "Milk", "Lemon", "Popcorn", "Mint candy" };
-    const int COFFEE = 5, CHILI = 6, CAKE = 2, ICE = 7, WATERMELON = 8, DONUT = 9, BURGER = 10, LOLLI = 11, MILK = 12, LEMON = 13, POPCORN = 14, MINT = 15;
-    static readonly string[][] Foods = {
+    internal static readonly string[] FoodZh = { "苹果", "饼干", "蛋糕", "寿司", "披萨", "咖啡", "辣椒", "冰淇淋", "西瓜", "甜甜圈", "汉堡", "棒棒糖", "牛奶", "柠檬", "爆米花", "薄荷糖", "炸鸡", "薯条", "面条", "饭团", "热狗", "奶茶", "布丁", "草莓",
+        "龙虾", "饺子", "煎蛋", "吐司", "香蕉", "葡萄", "桃子", "巧克力", "马卡龙", "烤串", "蛋挞", "可乐" };
+    internal static readonly string[] FoodEn = { "Apple", "Cookie", "Cake", "Sushi", "Pizza", "Coffee", "Chili", "Ice cream", "Watermelon", "Donut", "Burger", "Lollipop", "Milk", "Lemon", "Popcorn", "Mint candy", "Fried chicken", "Fries", "Noodles", "Rice ball", "Hot dog", "Milk tea", "Pudding", "Strawberry",
+        "Lobster", "Dumpling", "Fried egg", "Toast", "Banana", "Grapes", "Peach", "Chocolate", "Macaron", "Skewer", "Egg tart", "Cola" };
+    const int COFFEE = 5, CHILI = 6, CAKE = 2, ICE = 7, WATERMELON = 8, DONUT = 9, BURGER = 10, LOLLI = 11, MILK = 12, LEMON = 13, POPCORN = 14, MINT = 15,
+        FRIED = 16, FRIES = 17, NOODLES = 18, RICEBALL = 19, HOTDOG = 20, BOBA = 21, PUDDING = 22, STRAWBERRY = 23,
+        SUSHI_I = 3, LOBSTER = 24, DUMPLING = 25, FRIEDEGG = 26, TOAST = 27, BANANA = 28, GRAPES = 29, PEACH = 30, CHOCO = 31, MACARON = 32, SKEWER = 33, EGGTART = 34, COLA = 35;
+    internal static readonly string[][] Foods = {
         new[]{ "....b...", "...bgg..", ".rrrrrr.", "rrwrrrrr", "rrwrrrrr", "rrrrrrrr", ".rrrrrr.", "..rr.rr." },
         new[]{ "..cccc..", ".ccdccc.", "cccccdcc", "cdcccccc", "ccccdccc", "ccdccccc", ".ccccdc.", "..cccc.." },
         new[]{ "...r....", "..www...", ".pppppp.", "pppppppp", "yyyyyyyy", "wwwwwwww", "yyyyyyyy", "yyyyyyyy" },
@@ -365,6 +529,26 @@ class PetForm : Form
         new[]{ "......gg", "..YYYYg.", ".YYhhYY.", "YYYYYYYY", "YhYYYYYY", "YYYYYYhY", ".YYYYYY.", "..YYYY.." },   // 柠檬
         new[]{ ".w.yw.w.", "wywwywyw", ".wwywww.", "rwrwrwrw", ".rwrwrw.", ".rwrwrw.", ".rwrwrw.", "..rwrw.." },   // 爆米花
         new[]{ "........", "..MMMM..", "S.MwwM.S", "SSwMMwSS", "SSwMMwSS", "S.MwwM.S", "..MMMM..", "........" },   // 薄荷糖
+        new[]{ "........", "..eeee..", ".eeheee.", ".eeeehe.", "..eeeee.", "...eew..", "....ww..", "...w.w.." },   // 炸鸡腿
+        new[]{ "..h.h.h.", ".hh.hhh.", ".hhhhhh.", "rrrrrrrr", ".rrrrrr.", ".rrwwrr.", ".rrrrrr.", "..rrrr.." },   // 薯条
+        new[]{ "..S...S.", "...S...S", ".yhyhgy.", "wwwwwwww", "wrrrrrrw", ".wwwwww.", "..wwww..", "...ww..." },   // 面条
+        new[]{ "........", "...ww...", "..wwww..", ".wwwwww.", ".wwwwww.", "wwkkkkww", "wwkkkkww", ".wkkkkw." },   // 饭团
+        new[]{ "........", "........", ".tttttt.", "oYoYoYoo", "oooooooo", "tttttttt", ".tttttt.", "........" },   // 热狗
+        new[]{ "....P...", "...P....", ".wwwwww.", ".UUUUUU.", ".UUUUUU.", ".UUkUkU.", ".UkUUkU.", "..UUUU.." },   // 奶茶
+        new[]{ "........", "...dd...", "..dddd..", ".yyyyyy.", ".yyyyyy.", "yyyyyyyy", "yyyyyyyy", "SSSSSSSS" },   // 布丁
+        new[]{ "...gg...", "..gggg..", ".rrrrrr.", "rryrrryr", ".rrrrrr.", ".ryrryr.", "..rrrr..", "...rr..." },   // 草莓
+        new[]{ "r.r..r.r", "rr....rr", ".rr..rr.", "..rrrr..", "..kook..", "..rrrr..", "...rr...", "..rrrr.." },   // 龙虾（竖着，钳子朝上）
+        new[]{ "........", "........", "..mmmm..", ".mqmqmm.", "mwwwwwwm", "mwwwwwwm", ".mmmmmm.", "........" },   // 饺子
+        new[]{ "........", "..wwww..", ".wwwwww.", "wwwYYwww", "wwYYYYww", "wwwYYwww", ".wwwwww.", "..www..." },   // 煎蛋
+        new[]{ ".cccccc.", "cmmmmmmc", "cmmmmmmc", "cmmmmmmc", "cmmmmmmc", "cmmmmmmc", "cmmmmmmc", "cccccccc" },   // 吐司
+        new[]{ "......n.", ".....YY.", "....YYY.", "...YYYY.", "..YYYY..", ".YYYY...", "YYY.....", "n......." },   // 香蕉
+        new[]{ "....g...", "...g....", "..LVLV..", ".VLVLVL.", "..VLVLV.", "...VLV..", "...LV...", "....V..." },   // 葡萄
+        new[]{ "....gg..", "...g....", ".pppppp.", "pppPpppp", "pppPpppp", ".pppPpp.", "..pppp..", "........" },   // 桃子
+        new[]{ "........", "dddddddd", "dnndnndd", "dddddddd", "dnndnndd", "rrrrrrrr", "rwwrrrrr", "rrrrrrrr" },   // 巧克力
+        new[]{ "........", "..PPPP..", ".PPPPPP.", ".wwwwww.", ".PPPPPP.", "..PPPP..", "........", "........" },   // 马卡龙
+        new[]{ "..eeee..", "..eeee..", "..gggg..", "..oooo..", "..oooo..", "..eeee..", "...SS...", "...SS..." },   // 烤串
+        new[]{ "........", "........", ".eeeeee.", "eYYeYYYe", "eYYYYeYe", "eeeeeeee", ".eeeeee.", "........" },   // 蛋挞
+        new[]{ "...S....", "....S...", "..wwww..", ".DDDDDD.", ".rrrrrr.", ".rwwrrr.", ".DDDDDD.", "..DDDD.." },   // 可乐
     };
     static readonly Dictionary<char, Brush> Pal = MakePal();
     static Dictionary<char, Brush> MakePal()
@@ -398,6 +582,9 @@ class PetForm : Form
         d['v'] = new SolidBrush(Color.FromArgb(160, 160, 172));
         d['O'] = new SolidBrush(BodyCol);
         d['M'] = new SolidBrush(Color.FromArgb(140, 225, 195));
+        d['V'] = new SolidBrush(Color.FromArgb(140, 80, 190));
+        d['L'] = new SolidBrush(Color.FromArgb(190, 140, 230));
+        d['D'] = new SolidBrush(Color.FromArgb(80, 40, 30));
         return d;
     }
     internal static void DrawArt(Graphics g, string[] rows, int x, int y, int fp, int skipRows)
@@ -460,23 +647,31 @@ class PetForm : Form
         ContextMenuStrip menu = new ContextMenuStrip();
 
         ToolStripMenuItem feed = new ToolStripMenuItem(T("喂食", "Feed"));
-        for (int i = 0; i < Foods.Length; i++)
+        // 食物太多了，分成几类
+        string[] catZh = { "主食", "小吃", "甜点", "水果", "饮料" }, catEn = { "Meals", "Snacks", "Sweets", "Fruit", "Drinks" };
+        int[][] cats = {
+            new[] { SUSHI_I, 4, BURGER, NOODLES, RICEBALL, HOTDOG, DUMPLING, FRIEDEGG, TOAST, FRIED, LOBSTER },
+            new[] { 1, POPCORN, FRIES, SKEWER, CHILI, MINT },
+            new[] { CAKE, ICE, DONUT, LOLLI, PUDDING, CHOCO, MACARON, EGGTART },
+            new[] { 0, WATERMELON, LEMON, STRAWBERRY, BANANA, GRAPES, PEACH },
+            new[] { COFFEE, MILK, BOBA, COLA } };
+        for (int c = 0; c < cats.Length; c++)
         {
-            int idx = i;
-            feed.DropDownItems.Add(En ? FoodEn[i] : FoodZh[i], ArtIcon(Foods[i], 2), delegate { Feed(idx); });
+            ToolStripMenuItem sub = new ToolStripMenuItem(En ? catEn[c] : catZh[c], ArtIcon(Foods[cats[c][0]], 2));
+            foreach (int i in cats[c])
+            {
+                int idx = i;
+                sub.DropDownItems.Add(En ? FoodEn[i] : FoodZh[i], ArtIcon(Foods[i], 2), delegate { Feed(idx); });
+            }
+            feed.DropDownItems.Add(sub);
         }
+        feed.DropDownItems.Add(new ToolStripSeparator());
+        feed.DropDownItems.Add(T("套餐（最多 3 样）…", "Meal set (up to 3)…"), null, delegate { OpenMeal(); });
         menu.Items.Add(feed);
 
         ToolStripMenuItem act = new ToolStripMenuItem(T("动作", "Actions"));
-        act.DropDownItems.Add(T("跳一下 ♥", "Jump ♥"), null, delegate { Poke(); });
-        act.DropDownItems.Add(T("玩电脑", "Use the computer"), null, delegate { Do(St.Computer, 700); });
-        act.DropDownItems.Add(T("跳舞", "Dance"), null, delegate { Do(St.Dance, 300); });
-        act.DropDownItems.Add(T("吹泡泡", "Blow bubbles"), null, delegate { Do(St.Bubble, 300); });
-        act.DropDownItems.Add(T("伸懒腰", "Stretch"), null, delegate { Do(St.Stretch, 46); });
-        act.DropDownItems.Add(T("去睡觉 / 叫醒", "Sleep / Wake up"), null, delegate
-        {
-            if (state == St.Sleep) Wake(); else GoSleep();
-        });
+        FillActMenu(act);
+        act.DropDownOpening += delegate { FillActMenu(act); };   // 在小窝里时换成窝里的动作
         menu.Items.Add(act);
 
         ToolStripMenuItem game = new ToolStripMenuItem(T("玩游戏", "Games"));
@@ -494,6 +689,11 @@ class PetForm : Form
         ToolStripItem bathItem = menu.Items.Add(T("洗澡", "Take a bath"));
         bathItem.Click += delegate { if (inBath || intoBath) EndBath(false); else StartBath(); };
         menu.Opening += delegate { bathItem.Text = (inBath || intoBath) ? T("结束洗澡", "End the bath") : T("洗澡", "Take a bath"); };
+
+        ToolStripMenuItem glowItem = new ToolStripMenuItem(T("小窝的灯", "Bed light"));
+        glowItem.Click += delegate { Look.GlowOn = !Look.GlowOn; NestLookChanged(); };
+        menu.Opening += delegate { glowItem.Checked = Look.GlowOn; glowItem.Visible = NestOn; };
+        menu.Items.Add(glowItem);
 
         ToolStripMenuItem fol = new ToolStripMenuItem(T("跟着鼠标跑", "Follow the mouse"));
         fol.CheckOnClick = true;
@@ -514,6 +714,65 @@ class PetForm : Form
         if (old != null) old.Dispose();
     }
 
+    void FillActMenu(ToolStripMenuItem act)
+    {
+        act.DropDownItems.Clear();
+        if (inNest)
+        {
+            string[] zh = { "", "敲代码", "吃零食", "看书", "打游戏", "看电影", "听歌" };
+            string[] en = { "", "Code", "Have a snack", "Read a book", "Play games", "Watch a movie", "Listen to music" };
+            for (int i = 1; i <= 6; i++)
+            {
+                int a = i;
+                ToolStripMenuItem it = new ToolStripMenuItem(T(zh[i], en[i]));
+                it.Checked = state == St.Nest && nestAct == i;
+                it.Click += delegate { if (inNest) { nestAwake = 0; StartNestAct(a); } };
+                act.DropDownItems.Add(it);
+            }
+            act.DropDownItems.Add(new ToolStripSeparator());
+            act.DropDownItems.Add(state == St.Sleep ? T("叫醒", "Wake up") : T("在窝里睡觉 Zz", "Nap in bed Zz"), null, delegate
+            {
+                if (!inNest) return;
+                if (state == St.Sleep) NestWakeUp(); else NestDoze();
+            });
+            act.DropDownItems.Add(T("跳出小窝", "Hop out of bed"), null, delegate { if (inNest) WakeFromNest(); });
+            return;
+        }
+        act.DropDownItems.Add(T("跳一下 ♥", "Jump ♥"), null, delegate { Poke(); });
+        act.DropDownItems.Add(T("玩电脑", "Use the computer"), null, delegate { Do(St.Computer, 700); });
+        act.DropDownItems.Add(T("跳舞", "Dance"), null, delegate { Do(St.Dance, 300); });
+        act.DropDownItems.Add(T("吹泡泡", "Blow bubbles"), null, delegate { Do(St.Bubble, 300); });
+        act.DropDownItems.Add(T("伸懒腰", "Stretch"), null, delegate { Do(St.Stretch, 46); });
+        {
+            ToolStripMenuItem small = new ToolStripMenuItem(T("小动作", "Little things"));
+            string[] zh = { "", "想一想", "玩溜溜球", "喝热茶", "蹦蹦跳跳", "扫地", "打招呼", "打喷嚏" };
+            string[] en = { "", "Think", "Yo-yo", "Sip hot tea", "Hop around", "Sweep", "Say hi", "Sneeze" };
+            for (int i = 1; i < zh.Length; i++)
+            {
+                int a = i;
+                small.DropDownItems.Add(T(zh[i], en[i]), null, delegate { DoIdleAct(a); });
+            }
+            act.DropDownItems.Add(small);
+        }
+        if (state == St.Cling)
+        {
+            ToolStripMenuItem wall = new ToolStripMenuItem(T("在墙上…", "On the wall…"));
+            string[] zh = { "", "东张西望", "挥挥手", "打个盹", "晃晃腿", "哼歌", "吃饼干" };
+            string[] en = { "", "Look around", "Wave", "Doze off", "Swing legs", "Hum a tune", "Eat a cookie" };
+            for (int i = 1; i < zh.Length; i++)
+            {
+                int a = i;
+                wall.DropDownItems.Add(T(zh[i], en[i]), null, delegate { if (state == St.Cling) StartClingAct(a); });
+            }
+            act.DropDownItems.Add(wall);
+        }
+        act.DropDownItems.Add(T("去睡觉 / 叫醒", "Sleep / Wake up"), null, delegate
+        {
+            if (state == St.Sleep) Wake(); else GoSleep();
+        });
+        act.DropDownItems.Add(T("去小窝里玩 ♪", "Hang out in the bed ♪"), null, delegate { GoNestNow(); });
+    }
+
     protected override CreateParams CreateParams
     {
         get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; }  // 不出现在 Alt+Tab
@@ -529,23 +788,50 @@ class PetForm : Form
     {
         SaveConfig();
         if (nest != null) nest.Close();
+        if (backdrop != null) backdrop.Close();
+        if (light != null) light.Close();
         if (bath != null) bath.Close();
         base.OnFormClosed(e);
     }
 
     // 让桌宠盖在小窝 / 浴缸上面，玩具（附属窗口）会自动在桌宠上面
+    // 右键菜单开着的时候不要动层级，免得灯光盖住菜单
+    bool MenuOpen()
+    {
+        ContextMenuStrip m = ContextMenuStrip;
+        if (m == null) return false;
+        if (m.Visible) return true;
+        foreach (ToolStripItem it in m.Items)
+        {
+            ToolStripMenuItem mi = it as ToolStripMenuItem;
+            if (mi != null && mi.HasDropDownItems && mi.DropDown.Visible) return true;
+        }
+        return false;
+    }
     void RaiseZ()
     {
-        if (!IsHandleCreated) return;
-        SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13);
+        if (!IsHandleCreated || MenuOpen()) return;
+        // 叠放顺序：背景 < 小窝 < Claude < 灯光 < 玩具。每个都直接插到上一层的下面，中途不会有谁跑到 Claude 上面（拖小窝不闪）
+        IntPtr top = new IntPtr(-1);
+        bool lt = light != null && !light.IsDisposed && light.Visible && light.IsHandleCreated;
+        if (lt) { SetWindowPos(light.Handle, top, 0, 0, 0, 0, 0x13); SetWindowPos(Handle, light.Handle, 0, 0, 0, 0, 0x13); }
+        else SetWindowPos(Handle, top, 0, 0, 0, 0, 0x13);
+        bool nt = nest != null && !nest.IsDisposed && nest.Visible && nest.IsHandleCreated;
+        if (nt) SetWindowPos(nest.Handle, Handle, 0, 0, 0, 0, 0x13);
+        if (backdrop != null && !backdrop.IsDisposed && backdrop.Visible && backdrop.IsHandleCreated)
+            SetWindowPos(backdrop.Handle, nt ? nest.Handle : Handle, 0, 0, 0, 0, 0x13);
         if (toy != null && !toy.IsDisposed && toy.IsHandleCreated) SetWindowPos(toy.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13);
+        // 设置、套餐这些窗口永远在桌宠上面，不会被挡住
+        foreach (Form fm in new Form[] { settings, mealForm })
+            if (fm != null && !fm.IsDisposed && fm.Visible && fm.IsHandleCreated) SetWindowPos(fm.Handle, top, 0, 0, 0, 0, 0x13);
     }
 
     bool OnGround()
     {
         return state == St.Walk || state == St.Idle || state == St.Sleep || state == St.Computer
             || state == St.Dance || state == St.Bubble || state == St.Stretch || state == St.Eat
-            || state == St.GoNest || state == St.Gift || state == St.Play || state == St.Frozen;
+            || state == St.GoNest || state == St.Gift || state == St.Play || state == St.Frozen
+            || state == St.GoWater || state == St.Water || state == St.Meal;
     }
     bool Busy() { return state == St.Bye || inBath || intoBath || quitT > 0 || state == St.Frozen; }
 
@@ -554,6 +840,7 @@ class PetForm : Form
     {
         if (Busy()) return;
         if (state == St.Sleep) { Wake(); return; }
+        if (inNest) { if (s == St.Computer) StartNestAct(1); else WakeFromNest(); return; }
         if (!OnGround()) return;
         if (state == St.Gift && giftPhase == 0) giftPending = true;
         state = s; timer = t; frame = 0;
@@ -562,14 +849,107 @@ class PetForm : Form
     void Pick()
     {
         if (toy != null && rand.Next(100) < 75) { state = St.Play; playTimer = rand.Next(400, 900); return; }
+        if (rand.Next(100) < 6 && NestUsable() && !nest.drag) { nestGoAwake = true; state = St.GoNest; timer = 900; return; }   // 回窝里玩一会儿
+        if (rand.Next(100) < 10 && CanWater()) { state = St.GoWater; timer = 600; return; }   // 去给小窝的盆栽浇水
         int r = rand.Next(100);
-        if (r < 38) { state = St.Walk; dir = rand.Next(2) == 0 ? 1 : -1; timer = rand.Next(60, 220); }
-        else if (r < 53) { state = St.Idle; timer = rand.Next(40, 140); }
-        else if (r < 67) { state = St.Computer; timer = rand.Next(300, 700); frame = 0; }
-        else if (r < 76) { state = St.Dance; timer = rand.Next(150, 300); frame = 0; }
-        else if (r < 84) { state = St.Bubble; timer = rand.Next(150, 300); frame = 0; }
-        else if (r < 92) { state = St.Stretch; timer = 46; }
+        if (r < 34) { state = St.Walk; dir = rand.Next(2) == 0 ? 1 : -1; timer = rand.Next(60, 220); }
+        else if (r < 44) { state = St.Idle; idleAct = 0; timer = rand.Next(40, 140); }
+        else if (r < 62) StartIdleAct(rand.Next(1, 8));
+        else if (r < 73) { state = St.Computer; timer = rand.Next(300, 700); frame = 0; }
+        else if (r < 80) { state = St.Dance; timer = rand.Next(150, 300); frame = 0; }
+        else if (r < 87) { state = St.Bubble; timer = rand.Next(150, 300); frame = 0; }
+        else if (r < 93) { state = St.Stretch; timer = 46; }
         else { state = St.Idle; GoSleep(); }
+    }
+
+    // ---------- 平时的小动作 ----------
+    void StartIdleAct(int a)
+    {
+        state = St.Idle; idleAct = a; actT = 0; frame = 0;
+        int[] len = { 0, 170, 260, 300, 150, 300, 110, 130 };
+        timer = len[a];
+    }
+    void DoIdleAct(int a)
+    {
+        if (Busy() || inNest) return;
+        if (state == St.Sleep) { Wake(); return; }
+        if (!OnGround()) return;
+        if (state == St.Gift && giftPhase == 0) giftPending = true;
+        StartIdleAct(a);
+    }
+    void IdleActStep()
+    {
+        actT++;
+        Color brown = Color.FromArgb(150, 100, 60);
+        switch (idleAct)
+        {
+            case 1:   // 思考：… → 灯泡亮了
+                if (actT == 110) { AddText(T("有了!", "Got it!"), Color.FromArgb(220, 160, 30), tfont); AddSpark(10 * SZ, SZ, Yellow, 16); }
+                break;
+            case 2:   // 溜溜球
+                if (actT == 2) AddText(T("看我的~", "Watch this~"), PinkCol, tfont);
+                break;
+            case 3:   // 喝热茶
+                if (actT % 90 == 80) AddText(T("呼~ 好暖", "Ahh~ warm"), brown, tfont);
+                break;
+            case 4:   // 原地蹦蹦跳跳
+                if (actT % 18 == 0) { squash = 3; if (rand.Next(3) == 0) AddText(T("嘿咻~", "Hup~"), PinkCol, tfont); }
+                break;
+            case 5:   // 扫地
+                if (tick % 7 == 0) AddSpark(rand.Next(0, 3 * SZ), 11 * SZ, Color.FromArgb(185, 180, 170), 10);
+                if (actT % 140 == 30) AddText(T("扫扫~", "Sweep sweep~"), brown, tfont);
+                break;
+            case 6:   // 打招呼
+                if (actT == 2) AddText(T("嗨~", "Hi~"), PinkCol, tfont);
+                break;
+            case 7:   // 打喷嚏
+                if (actT == 15) AddText(T("啊…", "Ah…"), Color.FromArgb(120, 120, 160), tfont);
+                if (actT == 45) AddText(T("啊…啊…", "Ah… ah…"), Color.FromArgb(120, 120, 160), tfont);
+                if (actT == 72)
+                {
+                    AddText(T("阿嚏!", "Achoo!"), Color.FromArgb(90, 150, 220), tfont);
+                    shake = 14; squash = 4;
+                    for (int k = 0; k < 6; k++) AddSpark(rand.Next(3 * SZ, 9 * SZ), (TOP + 3) * SZ, Color.FromArgb(200, 230, 255), 12);
+                }
+                if (actT == 100) blushT = 40;
+                break;
+        }
+    }
+
+    // ---------- 贴在墙上的待机 ----------
+    void ClingActStep()
+    {
+        actT++;
+        switch (clingAct)
+        {
+            case 1: if (actT == 60 && rand.Next(2) == 0) SayHead("?", Color.FromArgb(120, 120, 170), tfont, false); break;
+            case 2: if (actT == 2) SayHead(T("嗨~", "Hi~"), PinkCol, tfont, true); break;
+            case 3: if (actT % 40 == 1) SayHead("z", Color.FromArgb(150, 150, 205), zfont, false); break;
+            case 4: case 5:
+                if (actT % 22 == 0) SayHead(rand.Next(2) == 0 ? "♪" : "♫", CodeCols[rand.Next(CodeCols.Length)], zfont, false);
+                break;
+            case 6:
+                if (actT % 45 == 5) { Particle p = new Particle(); p.Kind = 5; p.Col = Color.FromArgb(200, 150, 90); PlaceHead(p, 8 * SZ, (TOP + 4) * SZ, 0); p.Life = 18; parts.Add(p); }
+                if (actT == 3) SayHead(T("偷偷吃块饼干~", "Sneaky cookie~"), Color.FromArgb(170, 110, 60), tfont, true);
+                break;
+        }
+    }
+    // 说话 / 冒字：贴墙时身体是横着的，字要冒在“头顶”那一侧
+    void SayHead(string s, Color c, Font f, bool bubble)
+    {
+        AddText(s, c, f, bubble);
+        if (state != St.Cling || side == 0) return;
+        Particle p = parts[parts.Count - 1];
+        float w;
+        using (Graphics g = CreateGraphics()) w = g.MeasureString(s, f).Width;
+        PlaceHead(p, p.X + w / 2, p.Y, w);
+    }
+    void PlaceHead(Particle p, float sx, float sy, float w)
+    {
+        int W = COLS * SZ;
+        if (state != St.Cling || side == 0) { p.X = sx - w / 2; p.Y = sy; return; }
+        float x = side < 0 ? W - sy : sy, y = side < 0 ? sx : W - sx;
+        p.X = Math.Max(0, Math.Min(W - w, x - w / 2)); p.Y = y;
     }
 
     bool NestUsable()
@@ -581,10 +961,27 @@ class PetForm : Form
     }
     float NestPetX() { return nest.x + (nest.Width - Width) / 2f; }
 
+    // 浇水时站的位置：喷壶正好在小窝左边的盆栽上方
+    float WaterX() { return nest.x + 0.9f * SZ; }
+    bool CanWater()
+    {
+        if (!NestUsable() || (Look.Decor & 128) == 0 || nest.drag || nest.y < nest.Ground() - 1) return false;
+        Rectangle wa = Screen.FromPoint(new Point((int)(px + Width / 2), (int)(py + Height / 2))).WorkingArea;
+        float tx = WaterX();
+        return tx >= wa.Left && tx <= wa.Right - Width;
+    }
+    bool CanPet()
+    {
+        return !drag && quitT == 0 && !inBath && !intoBath && state != St.Bye && state != St.Frozen
+            && state != St.Jump && state != St.Fall;
+    }
+
     // 睡觉：有小窝就走过去钻进去，没有就原地睡；只有被点一下才会醒
     void GoSleep()
     {
+        if (inNest && state == St.Nest) { NestDoze(); return; }
         if (Busy() || state == St.Sleep || !OnGround()) return;
+        nestGoAwake = false;
         if (state == St.Gift && giftPhase == 0) giftPending = true;
         if (NestUsable()) { state = St.GoNest; timer = 900; }
         else { state = St.Sleep; frame = 0; }
@@ -592,7 +989,7 @@ class PetForm : Form
 
     void Wake()
     {
-        if (inNest) { WakeFromNest(); return; }
+        if (inNest) { if (state == St.Sleep) NestWakeUp(); else WakeFromNest(); return; }
         state = St.Idle; timer = 50; happy = 25; AddHearts(2);
     }
 
@@ -626,14 +1023,18 @@ class PetForm : Form
         nest.vy = 0;
         nest.Location = new Point((int)nest.x, (int)nest.y);
         nest.Show();
+        UpdateBackdrop();
         RaiseZ();
     }
 
     void HideNest()
     {
+        if (inNest && state == St.Nest) { state = St.Fall; vy = 0; vx = 0; }
         inNest = false; intoNest = false;   // 在窝里睡着的话，就地继续睡
         if (state == St.GoNest) { state = St.Idle; timer = 40; }
         if (nest != null) nest.Hide();
+        if (backdrop != null && !backdrop.IsDisposed) backdrop.Hide();
+        if (light != null && !light.IsDisposed) light.Hide();
     }
 
     internal void OnNestMoved()
@@ -643,10 +1044,135 @@ class PetForm : Form
             px = NestPetX(); py = nest.y;
             Location = new Point((int)px, (int)py);
         }
+        SyncBackdrop(); UpdateLight();   // 背景和灯光跟着一起走，不等下一帧
         RaiseZ();
     }
     internal void OnNestDropped() { SaveConfig(); RaiseZ(); }
-    internal void OnNestClicked() { if (inNest) WakeFromNest(); RaiseZ(); }
+    internal void OnNestClicked() { if (inNest) NestClick(); RaiseZ(); }
+
+    // 点小窝里的 Claude：睡着 → 醒过来在窝里玩；醒着 → 跳出来
+    void NestClick()
+    {
+        if (state == St.Sleep) NestWakeUp(); else WakeFromNest();
+    }
+    void NestWakeUp()
+    {
+        nestAwake = 0; happy = 25; AddHearts(1);
+        AddText(T("醒啦~", "Morning~"), PinkCol, tfont);
+        StartNestAct(0);
+    }
+    internal void GoNestNow()
+    {
+        if (Busy()) return;
+        if (inNest) { if (state == St.Sleep) NestWakeUp(); return; }
+        if (state == St.Sleep) Wake();
+        if (!OnGround() || !NestUsable()) return;
+        if (state == St.Gift && giftPhase == 0) giftPending = true;
+        nestGoAwake = true; state = St.GoNest; timer = 900;
+    }
+    static readonly int[] NestSnacks = { 0, 1, 3, 9 };
+    void StartNestAct(int a) { StartNestAct(a, false); }
+    void StartNestAct(int a, bool quiet)
+    {
+        int old = nestAct;
+        if (a <= 0) { do a = 1 + rand.Next(6); while (a == old); }
+        nestAct = a; state = St.Nest; frame = 0;
+        nestActT = rand.Next(1200, 3600);   // 一件事做 40 秒 ~ 2 分钟
+        nestBite = 0; nestSnack = NestSnacks[rand.Next(NestSnacks.Length)]; nestFed = false;
+        if (a == 5) { movieGenre = rand.Next(5); nestReactT = rand.Next(200, 450); }   // 这次看什么片子？不告诉你
+        if (quiet) { if (nest != null) nest.Invalidate(); return; }
+        string[] zh = { "", "敲代码~", "吃点零食~", "看会儿书~", "打游戏咯!", "看电影~", "听听歌~" };
+        string[] en = { "", "Coding~", "Snack time~", "Reading~", "Game on!", "Movie time~", "Music~" };
+        AddText(T(zh[a], en[a]), Color.FromArgb(120, 110, 170), tfont);
+        if (nest != null) nest.Invalidate();
+    }
+    // 看电影的反应：喜剧笑、恐怖吓得发抖、悲伤掉眼泪、爱情脸红、动作片激动
+    void MovieReact()
+    {
+        string[][] zh = { new[] { "哈哈哈", "噗嗤", "笑死我了", "哈哈哈哈!" }, new[] { "!!", "呜哇!", "不要开门…", "好可怕…" },
+                          new[] { "呜呜…", "好感人…", "(吸鼻子)", "不要走…" }, new[] { "哇~", "好甜~", "亲上了!", "心动~" }, new[] { "哇!", "好燃!", "轰!", "太帅了!" } };
+        string[][] en = { new[] { "Haha", "Pfft", "So funny", "Hahaha!" }, new[] { "!!", "Eek!", "Don't open it…", "So scary…" },
+                          new[] { "Sniff…", "So touching…", "(sniffle)", "Don't go…" }, new[] { "Aww~", "So sweet~", "They kissed!", "Heart flutter~" }, new[] { "Whoa!", "So hype!", "Boom!", "So cool!" } };
+        int k = rand.Next(4), lift = 3 * SZ / 2;
+        string s = T(zh[movieGenre][k], en[movieGenre][k]);
+        switch (movieGenre)
+        {
+            case 0: happy = 45; AddText(s, Color.FromArgb(220, 160, 30), tfont, false); break;
+            case 1:
+                scareT = 50; AddText(s, Color.FromArgb(160, 60, 75), tfont, false);
+                AddSpark(9 * SZ, (TOP + 1) * SZ - lift, Color.FromArgb(130, 190, 255), 14);   // 冷汗
+                break;
+            case 2: tearT = 160; AddText(s, Color.FromArgb(90, 130, 210), tfont, false); break;
+            case 3: blushT = 120; AddHearts(2); AddText(s, PinkCol, tfont, false); break;
+            default:
+                for (int i = 0; i < 4; i++) AddSpark(rand.Next(2 * SZ, 10 * SZ), rand.Next(2 * SZ, 5 * SZ) - lift, i % 2 == 0 ? Color.FromArgb(255, 150, 50) : Yellow, 12);
+                AddText(s, Color.FromArgb(230, 120, 40), tfont, false);
+                break;
+        }
+    }
+
+    void NextNestBite()
+    {
+        nestAct = 2; state = St.Nest;
+        nestSnack = nestQueue[0]; nestQueue.RemoveAt(0);
+        nestBite = 0; nestFed = true; nestActT = Math.Max(nestActT, 900);
+        if (nest != null) nest.Invalidate();
+    }
+
+    void NestDoze()
+    {
+        nestAct = 0; state = St.Sleep; frame = 0; nestAwake = 0;
+        AddText(T("困了… Zz", "Sleepy… Zz"), Color.FromArgb(120, 120, 170), tfont);
+        if (nest != null) nest.Invalidate();
+    }
+    // 窝里醒着的时候每一帧
+    void NestStep()
+    {
+        nestAwake++;
+        if (--nestActT <= 0)
+        {
+            if (nestAwake > 5400 && rand.Next(100) < 50) { NestDoze(); return; }   // 玩了 3 分钟以上，有点困了
+            StartNestAct(0); return;
+        }
+        int lift = 3 * SZ / 2;
+        switch (nestAct)
+        {
+            case 1: if (tick % 24 == 0) AddCode(); break;
+            case 2:
+                if (tick % 14 == 0)
+                {
+                    nestBite++;
+                    AddSpark(5 * SZ, (TOP + 4) * SZ - lift, Crumb(nestSnack), 8);
+                    if (nestBite >= 4)
+                    {
+                        nestBite = 0;
+                        if (nestFed)   // 喂进来的那份吃完了：出现这个食物的反应，然后接着做刚才的事
+                        {
+                            nestFed = false; MealFx(nestSnack);
+                            if (nestQueue.Count > 0) { NextNestBite(); return; }   // 套餐还有下一样
+                            if (nestMealOn)
+                            {
+                                nestMealOn = false; happy = 50; AddHearts(3);
+                                AddText(T("吃饱啦~ 谢谢款待!", "Yum! Thanks for the meal!"), PinkCol, tfont);
+                            }
+                            StartNestAct(nestFedPrev, true);
+                            return;
+                        }
+                        if (rand.Next(3) == 0) nestSnack = NestSnacks[rand.Next(NestSnacks.Length)];
+                    }
+                }
+                break;
+            case 3: if (tick % 150 == 0) AddText(T("翻一页~", "flip~"), Color.FromArgb(120, 110, 170), tfont, false); break;
+            case 4:
+                if (tick % 10 == 0) AddSpark(rand.Next(3 * SZ, 9 * SZ), (TOP + 2) * SZ - lift, CodeCols[rand.Next(CodeCols.Length)], 8);
+                if (rand.Next(450) == 0) { happy = 40; AddText(T("赢啦!", "I won!"), Yellow, tfont); }
+                break;
+            case 5:
+                if (--nestReactT <= 0) { nestReactT = rand.Next(240, 640); MovieReact(); }
+                break;
+            case 6: if (tick % 18 == 0) AddText(rand.Next(2) == 0 ? "♪" : "♫", CodeCols[rand.Next(CodeCols.Length)], zfont, false); break;
+        }
+    }
 
     // ---------- 洗澡 ----------
     void StartBath()
@@ -684,10 +1210,18 @@ class PetForm : Form
     void PickCling()
     {
         int r = rand.Next(100);
-        if (!pinned && r < 12) { HopOff(); return; }
-        if (r < 45) { vdir = -1; timer = rand.Next(30, 120); }
-        else if (r < 72) { vdir = 1; timer = rand.Next(30, 120); }
-        else { vdir = 0; timer = rand.Next(40, 160); }
+        clingAct = 0; actT = 0;
+        if (!pinned && r < 10) { HopOff(); return; }
+        if (r < 32) { vdir = -1; timer = rand.Next(30, 120); }
+        else if (r < 52) { vdir = 1; timer = rand.Next(30, 120); }
+        else if (r < 62) { vdir = 0; timer = rand.Next(40, 120); }
+        else { vdir = 0; StartClingAct(rand.Next(1, 7)); }   // 在墙上待一会儿，做点小事
+    }
+    void StartClingAct(int a)
+    {
+        clingAct = a; actT = 0; vdir = 0;
+        int[] len = { 0, 160, 110, 420, 200, 220, 260 };
+        timer = len[a];
     }
 
     void HopOff()
@@ -707,6 +1241,7 @@ class PetForm : Form
         }
         if (Busy()) return;
         if (state == St.Gift) { if (giftPhase == 0) OpenGift(); else AddHearts(2); return; }
+        if (state == St.Meal) { happy = 20; AddHearts(1); return; }   // 吃饭时点它不会跳起来
         if (state == St.Sleep) { Wake(); return; }
         if (state == St.Cling) { HopOff(); happy = 30; AddHearts(3); }
         else if (OnGround()) { state = St.Jump; vy = -11f * K; vx = 0; happy = 30; AddHearts(3); }
@@ -716,6 +1251,7 @@ class PetForm : Form
     {
         if (state == St.Bye || quitT > 0) return;
         if (settings != null && !settings.IsDisposed) settings.Close();
+        if (mealForm != null && !mealForm.IsDisposed) mealForm.Close();
         drag = false; snap = 0;
         if (inBath || intoBath)   // 洗澡时：在浴缸里挥手，浴缸一起淡出
         {
@@ -732,6 +1268,14 @@ class PetForm : Form
             RaiseZ();
             return;
         }
+        if (inNest && state == St.Nest)   // 窝里醒着：放下手里的东西，在窝里挥手，和小窝一起淡出
+        {
+            nestBye = true; quitT = 80;
+            AddText(T("拜拜~", "Bye~"), PinkCol, tfont);
+            RaiseZ();
+            return;
+        }
+        if (inNest) { inNest = false; if (nest != null) nest.Invalidate(); }
         if (state != St.Cling) side = 0;
         state = St.Bye; timer = 60; frame = 0; vdir = 0;
         AddText(T("拜拜~", "Bye~"), PinkCol, tfont);
@@ -741,6 +1285,12 @@ class PetForm : Form
     void Feed(int idx)
     {
         if (Busy()) return;
+        if (inNest && state == St.Nest)   // 在窝里：当零食吃
+        {
+            nestFedPrev = nestAct == 2 ? 0 : nestAct; nestAct = 2; nestSnack = idx; nestBite = 0; nestFed = true; nestActT = Math.Max(nestActT, 600);
+            AddText(T("嚼嚼~", "Munch~"), PinkCol, tfont);
+            return;
+        }
         if (state == St.Sleep) { Wake(); return; }
         if (!OnGround()) return;
         if (state == St.Gift && giftPhase == 0) giftPending = true;
@@ -750,7 +1300,185 @@ class PetForm : Form
             AddText(T("饱啦~", "So full~"), PinkCol, tfont);
             return;
         }
-        state = St.Eat; foodIdx = idx; foodY = -8 * FoodPx(); bites = 0; eatTick = 0; frame = 0;
+        state = St.Eat; foodIdx = idx;
+        float tx, ty; FoodTarget(out tx, out ty);
+        StartFood(tx, -8 * FoodPx());   // 从天上掉下来
+    }
+
+    void StartFood(float fromX, float fromY)
+    {
+        bites = 0; eatTick = 0; frame = 0; foodT = 0; foodFromX = fromX; foodFromY = fromY;
+    }
+
+    // 食物的吃法：0 嚼着吃, 1 端杯子喝, 2 吸管吸, 3 舔, 4 一颗颗扔进嘴里, 5 整颗含住
+    static int FoodStyle(int i)
+    {
+        switch (i)
+        {
+            case COFFEE: return 1;
+            case MILK: case BOBA: case COLA: return 2;
+            case FRIES: case GRAPES: return 7;   // 一根一根 / 一颗一颗吃
+            case LOBSTER: return 8;              // 整只吞进去
+            case NOODLES: return 6;   // 拿筷子嗦面
+            case ICE: case LOLLI: return 3;
+            case POPCORN: return 4;
+            case MINT: return 5;
+            default: return 0;
+        }
+    }
+    int BitesNeeded() { int s = FoodStyle(foodIdx); return (s == 4 || s == 7) ? 6 : (s == 3 ? 5 : 4); }
+    int BiteGap() { int s = FoodStyle(foodIdx); return (s == 1 || s == 2) ? 20 : (s == 6 || s == 8 ? 18 : (s == 0 ? 14 : 12)); }
+    int SeatDy() { return state == St.Meal && !drag ? SZ / 2 : 0; }   // 坐下来时身体低半格
+    int MouthY() { return (TOP + 3) * SZ + SeatDy(); }
+
+    // 每种吃法，食物最后停在哪里
+    void FoodTarget(out float x, out float y)
+    {
+        int fp = FoodPx(), half = SZ / 2;
+        float my = MouthY(), maxY = ROWS * SZ - 8 * fp;
+        switch (FoodStyle(foodIdx))
+        {
+            case 1: x = 6 * SZ; y = my - 2 * fp; break;                        // 杯口贴着嘴
+            case 2: x = 7 * SZ; y = Math.Min(maxY, my + half); break;          // 牛奶盒在旁边，插吸管
+            case 3: x = 6 * SZ + half - (foodIdx == ICE ? fp : 0); y = my - 2 * fp; break;   // 举在嘴边舔
+            default: x = (COLS * SZ - 8 * fp) / 2; y = Math.Min(maxY, my + SZ); break;
+        }
+    }
+
+    static readonly Dictionary<int, Color> CrumbCache = new Dictionary<int, Color>();
+    static Color Crumb(int i)   // 食物碎屑的颜色 = 这个食物用得最多的颜色
+    {
+        Color c;
+        if (CrumbCache.TryGetValue(i, out c)) return c;
+        Dictionary<char, int> cnt = new Dictionary<char, int>();
+        foreach (string r in Foods[i])
+            foreach (char ch in r)
+                if (ch != '.') { int v; cnt.TryGetValue(ch, out v); cnt[ch] = v + 1; }
+        char best = 'w'; int bv = -1;
+        foreach (KeyValuePair<char, int> kv in cnt) if (kv.Value > bv) { bv = kv.Value; best = kv.Key; }
+        c = ((SolidBrush)Pal[best]).Color; CrumbCache[i] = c;
+        return c;
+    }
+
+    // 吃一帧；返回 true = 这一份吃完了
+    bool EatStep()
+    {
+        if (foodT < 1) { foodT = Math.Min(1f, foodT + (state == St.Meal ? 1 / 14f : 1 / 24f)); return false; }
+        eatTick++;
+        if (eatTick % 5 == 0) frame++;
+        int st = FoodStyle(foodIdx), gap = BiteGap(), sd = SeatDy();
+        if (st == 4 && eatTick % gap == 1)   // 爆米花往上一抛
+        {
+            Particle p = new Particle();
+            p.Kind = 5; p.X = 6 * SZ - SZ / 4; p.Y = (TOP + 4) * SZ + sd; p.Life = 9;
+            p.VX = 0; p.VY = -2.6f * K; p.Col = Color.FromArgb(255, 250, 235);
+            parts.Add(p);
+        }
+        if (eatTick % gap != 0) return false;
+        bites++;
+        Color cc = Crumb(foodIdx);
+        switch (st)
+        {
+            case 0: case 4:
+                AddSpark(5 * SZ, (TOP + 4) * SZ + sd, cc, 8);
+                AddSpark(6 * SZ, (TOP + 4) * SZ + sd, cc, 8);
+                break;
+            case 1: case 2:
+                if (bites % 2 == 1) AddText(T("咕嘟", "gulp"), Color.FromArgb(110, 140, 200), tfont, false);
+                break;
+            case 6:
+                if (bites % 2 == 1) AddText(T("嗦~", "Slurp~"), Color.FromArgb(200, 150, 60), tfont, false);
+                break;
+            case 7:
+                AddSpark(6 * SZ, MouthY(), cc, 6);
+                break;
+            case 8:
+                if (bites == 2) AddText(T("啊呜~", "Aaam~"), Color.FromArgb(220, 80, 60), tfont, false);
+                break;
+            case 3:
+                AddSpark(7 * SZ, MouthY(), cc, 8);
+                if (bites == 2) AddText(T("舔舔~", "lick~"), PinkCol, tfont, false);
+                break;
+            case 5:
+                if (bites == 1) AddText(T("啵!", "Pop!"), Color.FromArgb(60, 170, 150), tfont, false);
+                break;
+        }
+        return bites >= BitesNeeded();
+    }
+
+    // ---------- 套餐 ----------
+    void OpenMeal()
+    {
+        if (mealForm == null || mealForm.IsDisposed) mealForm = new MealForm(this, K, En);
+        mealForm.Show();
+        mealForm.Activate();
+    }
+
+    internal void ServeMeal(int[] items)
+    {
+        if (items == null || items.Length == 0 || Busy()) return;
+        if (inNest)   // 在窝里：就在窝里一样一样抱着吃
+        {
+            if (state == St.Sleep) NestWakeUp();
+            nestFedPrev = nestAct == 2 ? 0 : nestAct;
+            nestQueue = new List<int>(items);
+            nestMealOn = true;
+            NextNestBite();
+            AddText(T("在窝里开饭啦~", "Dinner in bed~"), PinkCol, tfont);
+            return;
+        }
+        if (state == St.Sleep) Wake();
+        if (!OnGround() || state == St.Meal || state == St.Eat) { pendingMeal = items; return; }   // 落地 / 吃完再端上来
+        if (state == St.Gift && giftPhase == 0) giftPending = true;
+        if (full >= 6)
+        {
+            state = St.Idle; timer = 70; shake = 36;
+            AddText(T("饱啦~", "So full~"), PinkCol, tfont);
+            return;
+        }
+        meal = new List<int>(items); mealPos = 0; state = St.Meal; vx = 0; squash = 4;
+        AddText(T("开饭啦~", "Dinner time~"), PinkCol, tfont);
+        NextMealFood();
+    }
+
+    // 餐盘上还在等的食物摆在左右两边，中间空出来给正在吃的那份（k: 第几个, r: 还剩几个）
+    int TraySlotX(int k, int r) { return (r >= 2 && k == 0 ? 3 : 9) * SZ - 4 * FoodPx(); }
+    int TrayY() { return ROWS * SZ - SZ / 2; }
+
+    void NextMealFood()
+    {
+        foodIdx = meal[mealPos];
+        int sx = mealPos == 0 ? 6 * SZ - 4 * FoodPx() : TraySlotX(0, meal.Count - mealPos);
+        StartFood(sx, TrayY() - 8 * FoodPx());
+    }
+
+    // 套餐里的食物：只留下好玩的小效果，不打断吃饭
+    void MealFx(int idx)
+    {
+        full++;
+        switch (idx)
+        {
+            case COFFEE: boost = Math.Max(boost, 300); AddText("!!", Yellow, zfont, false); break;
+            case CHILI: hot = Math.Max(hot, 120); AddText(T("辣!", "Hot!"), Color.FromArgb(240, 70, 50), tfont, false); break;
+            case ICE: shiver = Math.Max(shiver, 40); break;
+            case WATERMELON: seedT = 50; break;
+            case BURGER: bloat = Math.Max(bloat, 200); full++; break;
+            case LOLLI: rainbow = Math.Max(rainbow, 60); break;
+            case MILK: milkT = 450; break;
+            case LEMON: sourT = Math.Max(sourT, 50); break;
+            case POPCORN: PopcornBurst(); break;
+            case MINT: coolT = Math.Max(coolT, 90); break;
+            case LOBSTER: bloat = Math.Max(bloat, 150); AddText(T("一口吞!", "Gulp!"), Color.FromArgb(220, 80, 60), tfont, false); break;
+            case COLA: AddText(T("嗝~", "Burp~"), Color.FromArgb(150, 100, 70), tfont, false); break;
+            default: AddHearts(2); happy = Math.Max(happy, 20); break;
+        }
+    }
+
+    void EndMeal()
+    {
+        meal.Clear(); mealPos = 0;
+        state = St.Jump; vy = -7f * K; vx = 0; happy = 50; AddHearts(4);
+        AddText(T("吃饱啦~ 谢谢款待!", "Yum! Thanks for the meal!"), PinkCol, tfont);
     }
 
     void FinishEat()
@@ -798,6 +1526,28 @@ class PetForm : Form
             case POPCORN:      // 一蹦一蹦打嗝
                 hiccups = 4; state = St.Jump; vy = -6f * K; vx = 0; PopcornBurst();
                 AddText(T("嗝!", "Hic!"), Color.FromArgb(200, 150, 60), tfont);
+                break;
+            case LOBSTER:
+                bloat = 150; state = St.Jump; vy = -9f * K; vx = 0; happy = 50; AddHearts(3);
+                for (int k = 0; k < 8; k++) AddSpark(rand.Next(SZ, 11 * SZ), rand.Next(2 * SZ, 9 * SZ), k % 2 == 0 ? Yellow : Color.FromArgb(240, 90, 70), 16);
+                AddText(T("一口吞! 满足~", "Gulped it whole!"), Color.FromArgb(220, 80, 60), tfont);
+                break;
+            case COLA:
+                state = St.Idle; timer = 60; happy = 20;
+                for (int k = 0; k < 3; k++) AddBubble();
+                AddText(T("嗝~", "Burp~"), Color.FromArgb(150, 100, 70), tfont);
+                break;
+            case NOODLES:
+                state = St.Idle; timer = 70; happy = 40; AddHearts(2);
+                AddText(T("嗦~ 好满足!", "Slurp~ so good!"), Color.FromArgb(200, 150, 60), tfont);
+                break;
+            case FRIED:
+                state = St.Jump; vy = -8f * K; vx = 0; happy = 30;
+                AddText(T("咔嚓! 好香~", "Crunch! Yum~"), Color.FromArgb(200, 130, 50), tfont);
+                break;
+            case BOBA:
+                state = St.Dance; timer = 120; frame = 0;
+                AddText(T("Q弹~", "Chewy~"), Color.FromArgb(160, 110, 70), tfont);
                 break;
             case MINT:         // 呼出清凉的气
                 coolT = 120; state = St.Idle; timer = 95;
@@ -851,11 +1601,67 @@ class PetForm : Form
 
     void OpenGift()
     {
-        giftPhase = 1; timer = 160; happy = 60;
+        giftPhase = 1; timer = 600; happy = 60; giftAnim = 0; giftDone = false;   // 举着等你来点
         AddHearts(4);
         for (int k = 0; k < 8; k++)
             AddSpark(rand.Next(SZ, 11 * SZ), rand.Next(SZ, 6 * SZ), k % 2 == 0 ? Yellow : PinkCol, 18);
         AddText(En ? "For you!" : "送你" + GiftZh[giftIdx] + "~", PinkCol, tfont);
+    }
+
+    // 点头顶的礼物：花和四叶草转圈，星星闪光，情书拆开，糖果剥开
+    void PlayGift()
+    {
+        if (giftAnim > 0) return;
+        timer = Math.Max(timer, 260); happy = Math.Max(happy, 30);
+        switch (giftIdx)
+        {
+            case 0: giftAnim = 45; AddText(T("转圈圈~", "Spin~"), PinkCol, tfont); break;
+            case 1: giftAnim = 45; AddText(T("幸运加倍!", "Double luck!"), Color.FromArgb(50, 140, 70), tfont); break;
+            case 2: giftAnim = 30; AddText(T("闪闪发光~", "Twinkle~"), Color.FromArgb(220, 160, 30), tfont); break;
+            case 3:
+                if (giftDone) { giftAnim = 20; AddHearts(2); }
+                else { giftAnim = 50; giftDone = true; AddText(T("拆开看看~", "Open it~"), PinkCol, tfont); }
+                break;
+            case 4:
+                if (giftDone) { giftAnim = 20; AddHearts(2); AddText(T("甜甜的~", "Sweet~"), PinkCol, tfont); }
+                else { giftAnim = 40; giftDone = true; }
+                break;
+        }
+    }
+
+    void GiftAnimStep()
+    {
+        giftAnim--;
+        int fp = SZ / 2;
+        float cx = COLS * SZ / 2f, cy = (TOP - 4) * SZ - SZ / 2 + 4 * fp;
+        switch (giftIdx)
+        {
+            case 0: case 1:
+                if (giftAnim % 6 == 0)
+                    AddSpark(cx + rand.Next(-3 * SZ, 3 * SZ), cy + rand.Next(-2 * SZ, 2 * SZ),
+                        giftIdx == 0 ? Color.FromArgb(245, 110, 160) : Color.FromArgb(80, 175, 80), 16);
+                break;
+            case 2:
+                if (giftAnim % 3 == 0) AddSpark(cx + rand.Next(-4 * SZ, 4 * SZ), cy + rand.Next(-3 * SZ, 2 * SZ), giftAnim % 6 == 0 ? Yellow : Color.White, 14);
+                break;
+            case 3:
+                if (giftAnim == 12 && giftDone && timer > 0) { AddText(T("最喜欢你啦!", "Love you lots!"), PinkCol, tfont); AddHearts(3); }
+                break;
+            case 4:
+                if (giftAnim == 15 && giftDone)   // 糖纸飞走
+                {
+                    for (int k = 0; k < 6; k++)
+                    {
+                        Particle p = new Particle();
+                        p.Kind = 5; p.X = cx + rand.Next(-2 * SZ, 2 * SZ); p.Y = cy;
+                        p.VX = ((float)rand.NextDouble() - 0.5f) * 4f * K; p.VY = -(1.5f + (float)rand.NextDouble() * 2f) * K;
+                        p.Life = 28; p.Col = k % 2 == 0 ? Color.FromArgb(110, 170, 240) : Color.FromArgb(160, 205, 250);
+                        parts.Add(p);
+                    }
+                    AddText(T("剥开啦~ 甜甜的!", "Unwrapped~ sweet!"), PinkCol, tfont);
+                }
+                break;
+        }
     }
 
     // ---------- 玩具 / 游戏 ----------
@@ -876,7 +1682,8 @@ class PetForm : Form
         toy.Show();
         bounceCount = 0; popCount = 0; bubbleWait = 0;
         if (kind == 3) AddText(T("扔飞盘给我~", "Throw it!"), PinkCol, tfont);
-        if (state == St.Sleep) Wake();
+        if (inNest) WakeFromNest();
+        else if (state == St.Sleep) Wake();
         else if (OnGround())
         {
             if (state == St.Gift && giftPhase == 0) giftPending = true;
@@ -1096,10 +1903,40 @@ class PetForm : Form
             double op = quitT < 15 ? quitT / 15.0 : 1.0;
             Opacity = op;
             if (nest != null && !nest.IsDisposed && nest.Visible) { nest.Opacity = op; if (inNest) nest.Invalidate(); }
+            if (backdrop != null && !backdrop.IsDisposed && backdrop.Visible) backdrop.Opacity = op * Look.BgAlpha / 100.0;
+            if (light != null && !light.IsDisposed && light.Visible) light.Fade(op);
             if (bath != null && !bath.IsDisposed) bath.Opacity = op;
             if (quitT == 0) { timerCtl.Stop(); Close(); return; }
         }
         if (nest != null && !nest.IsDisposed && nest.Visible) nest.Step();
+        if (backdrop != null && !backdrop.IsDisposed && backdrop.Visible)
+        {
+            SyncBackdrop();
+            if (tick % 3 == 0) backdrop.Invalidate();
+            if (Weather == 3 && tick >= nextThunder)   // 打雷：间隔随机，有时连闪两下
+            {
+                BackdropForm.FlashFrom = tick; BackdropForm.FlashTo = tick + 2 + rand.Next(3);
+                bool dbl = rand.Next(4) == 0;
+                nextThunder = tick + (dbl ? 12 + rand.Next(10) : rand.Next(360, 1800));
+                if (!dbl && rand.Next(2) == 0 && state != St.Sleep && quitT == 0)
+                    AddText(T("轰隆~", "Rumble~"), Color.FromArgb(110, 110, 160), tfont, false);
+            }
+            // 鼠标移到落地灯上时，背景才接收点击（其它地方照样穿透到桌面）
+            bool overLamp = false;
+            if (Look.Bg == 1 && (Look.RoomDecor & 8) != 0)
+            {
+                Rectangle lr = new Rectangle(backdrop.Left + 35 * SZ, backdrop.Top + (int)(8.5f * SZ), (int)(3.2f * SZ), (int)(11.5f * SZ));
+                overLamp = lr.Contains(Cursor.Position);
+            }
+            backdrop.SetClickable(overLamp);
+        }
+        UpdateLight();
+        if (Look.Weather == 0 && tick >= nextWeatherTick)   // 自动天气：每 6~12 分钟变一次
+        {
+            nextWeatherTick = tick + rand.Next(10800, 21600);
+            int r = rand.Next(100);
+            autoWeather = r < 60 ? 1 : (r < 82 ? 2 : (r < 94 ? 3 : 4));
+        }
         if (toy != null && toy.IsDisposed) toy = null;
         if (toy != null && toy.Kind == 4 && bubbleWait > 0)
         {
@@ -1163,6 +2000,52 @@ class PetForm : Form
                 parts.Add(p);
             }
         }
+        // 摸头：鼠标停在头上左右来回晃，Claude 会很开心
+        if (CanPet())
+        {
+            Point c = Cursor.Position;
+            float wx = c.X - px, wy = c.Y - py, cx = wx, cy = wy, W = COLS * SZ;
+            // 贴在墙上时身体是横过来画的：把鼠标换算回“站着”的坐标
+            int cs = state == St.Cling ? side : 0;
+            if (cs < 0) { cx = wy; cy = W - wx; }
+            else if (cs > 0) { cx = W - wy; cy = wx; }
+            cy -= SeatDy();
+            if (inNest && state == St.Nest) cy += 3 * SZ / 2;   // 窝里坐起来，头高一点
+            bool onHead = cx >= 2 * SZ && cx < 10 * SZ && cy >= (TOP - 1) * SZ && cy < (TOP + 3) * SZ;
+            // 只看鼠标自己的移动（换算到头的横向），Claude 自己在墙上爬动不算摸
+            int raw = cs == 0 ? c.X : (cs < 0 ? c.Y : -c.Y);
+            int sx = raw, mdx = sx - lastPetX;
+            if (onHead && Math.Abs(mdx) >= 2)
+            {
+                int s = Math.Sign(mdx);
+                if (s == -lastPetSign) petScore += 1f;   // 换方向一次 = 摸一下
+                lastPetSign = s;
+            }
+            if (!onHead) lastPetSign = 0;
+            lastPetX = sx;
+        }
+        else petScore = 0;
+        petScore = Math.Max(0f, petScore - 0.04f);
+        if (petScore >= 3f)
+        {
+            if (pettedT == 0 && tick - lastPetSay > 90) { AddText(T("嘿嘿~", "Hehe~"), PinkCol, tfont); lastPetSay = tick; }
+            pettedT = 20;
+        }
+        if (pettedT > 0)
+        {
+            pettedT--; blushT = 90;
+            if (happy < 3) happy = 3;
+            if (tick % 12 == 0) AddHearts(1);
+            // 摸头不会打断它正在做的事：边走边摸、边爬边摸都可以
+        }
+        if (pendingMeal != null && !drag && !inNest && !inBath && (state == St.Idle || state == St.Walk))
+        {
+            int[] m = pendingMeal; pendingMeal = null; ServeMeal(m);
+        }
+        if (blushT > 0) blushT--;
+        if (tearT > 0) tearT--;
+        if (scareT > 0) scareT--;
+
         if (rainbow > 0)
         {
             rainbow--;
@@ -1174,7 +2057,7 @@ class PetForm : Form
         }
         if (bath != null && bath.IsDisposed) bath = null;
         if (bath != null) bath.Step();
-        if (tick % 150 == 0 && ((nest != null && nest.Visible) || bath != null)) RaiseZ();
+        if (tick % 30 == 0 && ((nest != null && nest.Visible) || bath != null)) RaiseZ();   // 时不时把层级理一理
 
         // 每小时掷一次骰子：30% 概率准备一份礼物
         if (DateTime.Now >= nextGiftRoll)
@@ -1206,7 +2089,8 @@ class PetForm : Form
                 {
                     px = NestPetX(); py = nest.y;
                     if (tick % 15 == 0) frame++;
-                    if (tick % 6 == 0) nest.Invalidate();   // 在窝里也会慢慢呼吸
+                    if (state == St.Nest && quitT == 0) NestStep();
+                    if (tick % 6 == 0 || state == St.Nest) nest.Invalidate();   // 在窝里也会慢慢呼吸
                 }
             }
             if (inBath)
@@ -1236,6 +2120,8 @@ class PetForm : Form
 
     void Behave(Rectangle wa, float ground)
     {
+        if (state != St.Idle) idleAct = 0;
+        if (state != St.Cling || vdir != 0) clingAct = 0;
         if (follow && (state == St.Walk || state == St.Idle))
         {
             float curDx = Cursor.Position.X - (px + Width / 2f);
@@ -1262,13 +2148,40 @@ class PetForm : Form
                 if (--timer <= 0) Pick();
                 break;
             case St.Idle:
-                if (--timer <= 0) Pick();
+                if (idleAct > 0) IdleActStep();
+                if (--timer <= 0) { idleAct = 0; Pick(); }
                 break;
             case St.Sleep:   // 深度睡眠：不会自己醒
                 if (tick % 15 == 0) frame++;
                 break;
+            case St.GoWater:   // 走到盆栽旁边
+                if (!CanWater()) { state = St.Idle; timer = 40; break; }
+                {
+                    float tx = WaterX(), d = tx - px;
+                    if (Math.Abs(d) <= 2.5f * K)
+                    {
+                        px = tx; dir = -1; state = St.Water; timer = 150;
+                        AddText(T("浇浇水~", "Watering~"), Color.FromArgb(60, 150, 90), tfont);
+                    }
+                    else
+                    {
+                        dir = d > 0 ? 1 : -1; px += dir * 2f * K;
+                        if (tick % 4 == 0) frame++;
+                        if (--timer <= 0) { state = St.Idle; timer = 40; }
+                    }
+                }
+                break;
+            case St.Water:     // 拿喷壶浇水
+                dir = -1;
+                if (tick % 9 == 0) AddSpark(rand.Next(0, 2 * SZ), rand.Next(7 * SZ, 10 * SZ), Color.FromArgb(120, 210, 120), 14);
+                if (--timer <= 0)
+                {
+                    state = St.Idle; timer = 50; happy = 25;
+                    AddText(T("长高高~", "Grow big~"), Color.FromArgb(60, 150, 90), tfont);
+                }
+                break;
             case St.GoNest:
-                if (!NestUsable()) { state = St.Sleep; frame = 0; break; }
+                if (!NestUsable()) { if (nestGoAwake) { state = St.Idle; timer = 40; } else { state = St.Sleep; frame = 0; } break; }
                 if (nest.drag || nest.y < nest.Ground() - 1) break;   // 窝还在空中，等一下
                 {
                     float tx = NestPetX(), d = tx - px;
@@ -1277,7 +2190,7 @@ class PetForm : Form
                     {
                         dir = d > 0 ? 1 : -1; px += dir * 2f * K;
                         if (tick % 6 == 0) frame++;
-                        if (--timer <= 0) { state = St.Sleep; frame = 0; }
+                        if (--timer <= 0) { if (nestGoAwake) { state = St.Idle; timer = 40; } else { state = St.Sleep; frame = 0; } }
                     }
                 }
                 break;
@@ -1288,7 +2201,21 @@ class PetForm : Form
                     if (tick % 110 == 0) AddText(T("有礼物给你!", "Gift for you!"), PinkCol, tfont);
                     if (timer <= 0) OpenGift();
                 }
-                else if (timer <= 0) { state = St.Idle; timer = 40; }
+                else
+                {
+                    if (giftAnim > 0) GiftAnimStep();
+                    if (!giftDone && giftAnim == 0 && timer % 180 == 90) AddText(T("点点它~", "Tap it~"), PinkCol, tfont);
+                    if (timer <= 0 && giftAnim == 0) { state = St.Idle; timer = 40; }
+                }
+                break;
+            case St.Meal:   // 坐着吃套餐，一样一样从餐盘上拿起来吃
+                if (mealPos >= meal.Count) { EndMeal(); break; }
+                if (EatStep())
+                {
+                    MealFx(foodIdx);
+                    mealPos++;
+                    if (mealPos >= meal.Count) EndMeal(); else NextMealFood();
+                }
                 break;
             case St.Play:
                 PlayStep(wa);
@@ -1315,20 +2242,7 @@ class PetForm : Form
                 if (--timer <= 0) { state = St.Idle; timer = 50; }
                 break;
             case St.Eat:
-                float rest = (TOP + 4) * SZ;
-                if (foodY < rest) { foodY = Math.Min(rest, foodY + 3f * K); }
-                else
-                {
-                    eatTick++;
-                    if (eatTick % 5 == 0) frame++;
-                    if (eatTick % 14 == 0)
-                    {
-                        bites++;
-                        AddSpark(5 * SZ, (TOP + 4) * SZ, Color.FromArgb(240, 220, 170), 8);
-                        AddSpark(6 * SZ, (TOP + 4) * SZ, Color.FromArgb(240, 220, 170), 8);
-                        if (bites >= 4) FinishEat();
-                    }
-                }
+                if (EatStep()) FinishEat();
                 break;
             case St.Bye:
                 if (tick % 5 == 0) frame++;
@@ -1337,6 +2251,8 @@ class PetForm : Form
                 {
                     Opacity = Math.Max(0.0, timer / 12.0);
                     if (nest != null && !nest.IsDisposed && nest.Visible) nest.Opacity = Opacity;
+                    if (backdrop != null && !backdrop.IsDisposed && backdrop.Visible) backdrop.Opacity = Opacity * Look.BgAlpha / 100.0;
+                    if (light != null && !light.IsDisposed && light.Visible) light.Fade(Opacity);
                 }
                 if (timer <= 0) { timerCtl.Stop(); Close(); }
                 return;
@@ -1350,6 +2266,7 @@ class PetForm : Form
                     if (py > ground) { py = ground; vdir = -1; }
                 }
                 if (py > ground) py = ground;
+                if (clingAct > 0) ClingActStep();
                 if (--timer <= 0) PickCling();
                 break;
             default:   // Fall / Jump
@@ -1381,6 +2298,8 @@ class PetForm : Form
                         if (NestUsable() && Math.Abs(NestPetX() - px) < SZ)
                         {
                             inNest = true; state = St.Sleep; frame = 0; squash = 0;
+                            if (nestGoAwake) StartNestAct(0); else nestAct = 0;
+                            nestGoAwake = false;
                             nest.Invalidate();
                         }
                     }
@@ -1420,7 +2339,8 @@ class PetForm : Form
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left || state == St.Bye || quitT > 0 || inBath || intoBath) return;
         if (state == St.Frozen) { Poke(); return; }   // 冻住时点它 = 敲冰
-        if (inNest) { WakeFromNest(); return; }
+        if (inNest) { NestClick(); return; }
+        if (state == St.Gift && giftPhase == 1 && e.Y < TOP * SZ) { PlayGift(); return; }   // 点到头顶的礼物
         Point c = Cursor.Position;
         drag = true; dragMoved = false;
         snap = state == St.Cling ? side : 0;
@@ -1495,16 +2415,12 @@ class PetForm : Form
         }
         rot = 0; ox = 0; oy = 0;
 
-        if (state == St.Eat && !drag)
+        if ((state == St.Eat || state == St.Meal) && !drag)
         {
-            int fp = FoodPx();
-            DrawArt(g, Foods[foodIdx], (COLS * SZ - 8 * fp) / 2, (int)foodY, fp, Math.Min(8, bites * 2));
+            if (state == St.Meal) DrawTray(g);
+            if (state == St.Eat || mealPos < meal.Count) DrawFood(g);
         }
-        if (state == St.Gift && giftPhase == 1 && !drag)
-        {
-            int fp = SZ / 2, bob = (tick / 8) % 2 == 0 ? 0 : SZ / 4;
-            DrawArt(g, Gifts[giftIdx], (COLS * SZ - 8 * fp) / 2, (TOP - 4) * SZ - SZ / 2 - bob, fp, 0);
-        }
+        if (state == St.Gift && giftPhase == 1 && !drag) DrawGiftItem(g);
 
         if (state == St.Sleep && !drag)   // 像素 Z，一个比一个大，轻轻上下飘
         {
@@ -1568,6 +2484,216 @@ class PetForm : Form
                 using (Brush b = new SolidBrush(p.Col)) g.DrawString(p.Text, p.F ?? zfont, b, p.X, p.Y);
             }
         }
+    }
+
+    // 任意行数的小像素图（字符对应 Pal 里的颜色）
+    static void DrawRows(Graphics g, int x, int y, int fp, params string[] rows)
+    {
+        for (int r = 0; r < rows.Length; r++)
+            for (int c = 0; c < rows[r].Length; c++)
+            {
+                char ch = rows[r][c];
+                if (ch != '.') g.FillRectangle(Pal[ch], x + c * fp, y + r * fp, fp, fp);
+            }
+    }
+    // 8x8 像素图拉伸到 w x h（牛奶盒被吸扁）
+    static void DrawArtScaled(Graphics g, string[] rows, int x, int y, int w, int h)
+    {
+        for (int r = 0; r < 8; r++)
+        {
+            int y0 = y + r * h / 8, y1 = y + (r + 1) * h / 8;
+            for (int c = 0; c < 8; c++)
+            {
+                char ch = rows[r][c];
+                int x0 = x + c * w / 8, x1 = x + (c + 1) * w / 8;
+                if (ch != '.' && x1 > x0 && y1 > y0) g.FillRectangle(Pal[ch], x0, y0, x1 - x0, y1 - y0);
+            }
+        }
+    }
+
+    // 正在吃的那一份食物，每种吃法画法不一样
+    void DrawFood(Graphics g)
+    {
+        int fp = FoodPx(), half = SZ / 2;
+        float tx, ty; FoodTarget(out tx, out ty);
+        float e = 1 - (1 - foodT) * (1 - foodT);
+        int x = (int)Math.Round(foodFromX + (tx - foodFromX) * e), y = (int)Math.Round(foodFromY + (ty - foodFromY) * e);
+        string[] art = Foods[foodIdx];
+        if (foodT < 1) { DrawArt(g, art, x, y, fp, 0); return; }
+        int gap = BiteGap(), ph = eatTick % gap, k5 = Math.Min(4, ph * 5 / gap);
+        bool done = bites >= BitesNeeded();
+        switch (FoodStyle(foodIdx))
+        {
+            case 1:   // 端起杯子一口一口喝：热气慢慢没了，最后杯子空了
+                {
+                    string[] cup = (string[])art.Clone();
+                    if (bites >= 3) cup[3] = cup[3].Replace('n', 'w');
+                    int ang = done ? 0 : new[] { 0, -15, -30, -30, -15 }[k5];
+                    GraphicsState gs = g.Save();
+                    g.TranslateTransform(x, y + 2 * fp);
+                    g.RotateTransform(ang);
+                    DrawArt(g, cup, 0, -2 * fp, fp, Math.Min(2, bites));
+                    g.Restore(gs);
+                }
+                break;
+            case 2:   // 牛奶盒插着吸管，越吸越扁
+                {
+                    int w = 8 * fp - bites * 8 * fp / 10, hgt = 8 * fp - (ph < gap / 2 ? 0 : fp / 2);
+                    int ax = x + (8 * fp - w) / 2, ay = y + 8 * fp - hgt;
+                    DrawArtScaled(g, art, ax, ay, w, hgt);
+                    int sq = Math.Max(2, SZ / 4);
+                    float x0 = 6 * SZ, y0 = MouthY() + sq / 2, x1 = ax + w / 2f, y1 = ay - sq;
+                    int n = Math.Max(3, (int)(Math.Abs(x1 - x0) + Math.Abs(y1 - y0)) / sq);
+                    for (int i = 0; i <= n; i++)
+                    {
+                        float t = i / (float)n;
+                        g.FillRectangle((i / 2) % 2 == 0 ? Brushes.White : accRed, (int)(x0 + (x1 - x0) * t), (int)(y0 + (y1 - y0) * t), sq, sq);
+                    }
+                }
+                break;
+            case 3:   // 伸舌头舔，越舔越小
+                {
+                    bool lick = ph < gap / 2 && !done;
+                    DrawArt(g, art, x - (lick ? fp : 0), y, fp, Math.Min(4, bites));
+                }
+                break;
+            case 4:   // 爆米花桶放在前面，一颗颗抛进嘴里
+                DrawArt(g, art, x, y, fp, Math.Min(3, bites / 2));
+                break;
+            case 6:   // 面条：筷子从碗里夹起面，一口一口嗦上去
+                {
+                    DrawArt(g, art, x, y, fp, bites >= 3 ? 1 : 0);
+                    int u = Math.Max(1, SZ / 4), my = MouthY() + half / 2, bowlTop = y + 2 * fp;
+                    float k = done ? 1 : Math.Min(1f, ph / (gap * 0.7f));   // 这一口嗦了多少
+                    int bot = (int)(bowlTop - (bowlTop - my) * k);
+                    if (!done && bot > my)
+                        using (Brush nb = new SolidBrush(Color.FromArgb(250, 215, 120)))
+                        {
+                            g.FillRectangle(nb, 6 * SZ - u, my, u, bot - my);
+                            g.FillRectangle(nb, 6 * SZ + u / 2, my, u, Math.Max(u, bot - my - u));
+                        }
+                    // 两根筷子，斜着从右手伸过来
+                    int tipY = done ? my + SZ : (int)(bowlTop + fp - (bowlTop + fp - (my + half)) * k);
+                    using (Brush cb = new SolidBrush(Color.FromArgb(150, 100, 60)))
+                        for (int s = 0; s < 2; s++)
+                        {
+                            float x0 = 9 * SZ + s * u * 2, y0 = my - SZ + s * u, x1 = 6 * SZ + 2 * u + s * u * 2, y1 = tipY + s * u;
+                            int n = 10;
+                            for (int i = 0; i <= n; i++)
+                                g.FillRectangle(cb, (int)(x0 + (x1 - x0) * i / n), (int)(y0 + (y1 - y0) * i / n), u, u);
+                        }
+                }
+                break;
+            case 7:   // 薯条 / 葡萄：从盒子里拿一根（一颗）送进嘴里
+                {
+                    int left = BitesNeeded() - bites;
+                    DrawArt(g, art, x, y, fp, foodIdx == FRIES ? Math.Min(3, (bites + 1) / 2) : Math.Min(6, bites));
+                    if (!done && ph < gap * 0.6f)
+                    {
+                        float k = ph / (gap * 0.6f);
+                        int u = Math.Max(1, SZ / 4);
+                        int sx = (int)(x + 4 * fp), sy = (int)(y + (y - MouthY()) * 0 + fp);
+                        int cx = (int)(sx + (6 * SZ - sx) * k), cy = (int)(sy + (MouthY() - sy) * k);
+                        if (foodIdx == FRIES) g.FillRectangle(Pal[(char)104], cx, cy - 2 * u, u, 3 * u);   // 一根薯条
+                        else g.FillRectangle(Pal[(char)86], cx - u / 2, cy - u / 2, 2 * u, 2 * u);         // 一颗葡萄
+                    }
+                }
+                break;
+            case 8:   // 龙虾：竖着慢慢整只吞进嘴里
+                {
+                    int lf = Math.Max(2, SZ / 2);
+                    float k = Math.Min(1f, eatTick / (float)(BitesNeeded() * gap - 6));
+                    int mouthBot = MouthY() + half;
+                    int lx = 6 * SZ - 4 * lf, ly = (int)(mouthBot - 8 * lf + 8 * lf * k);
+                    GraphicsState gs = g.Save();
+                    g.SetClip(new Rectangle(0, 0, COLS * SZ, mouthBot));   // 嘴巴下面的部分已经吞进去了
+                    DrawArt(g, art, lx, ly, lf, 0);
+                    g.Restore(gs);
+                }
+                break;
+            case 5:   // 薄荷糖：一下丢进嘴里含着
+                if (eatTick < 8)
+                {
+                    float t = eatTick / 8f;
+                    DrawArt(g, art, (int)(x + (6 * SZ - 4 * fp - x) * t), (int)(y + (MouthY() - 4 * fp - y) * t), fp, 0);
+                }
+                break;
+            default:   // 一口一口咬掉
+                DrawArt(g, art, x, y, fp, Math.Min(8, bites * 2));
+                break;
+        }
+    }
+
+    // 套餐的餐盘：放在身前，还没吃的摆在上面
+    void DrawTray(Graphics g)
+    {
+        int fp = FoodPx(), half = SZ / 2, q = Math.Max(1, SZ / 4), ty = TrayY();
+        Brush wood = C(170, 120, 80), rim = C(130, 88, 58);
+        g.FillRectangle(wood, SZ, ty, 10 * SZ, half);
+        g.FillRectangle(rim, SZ - q, ty - q, q, half + q);
+        g.FillRectangle(rim, 11 * SZ, ty - q, q, half + q);
+        int r = meal.Count - mealPos - 1;
+        for (int i = mealPos + 1; i < meal.Count; i++) DrawArt(g, Foods[meal[i]], TraySlotX(i - mealPos - 1, r), ty - 8 * fp, fp, 0);
+    }
+
+    static readonly string[] CandyFlare = { "........", "B......B", "BB.PP.BB", "BBPwPPBB", "BBPPPPBB", "BB.PP.BB", "B......B", "........" };
+    static readonly string[] CandyOpen = { "........", "BBBBBBBB", "BBPPPPBB", "BPPwPPPB", "BPPPPPPB", "BBPPPPBB", "BBBBBBBB", "........" };
+    static readonly string[] CandyBare = { "........", "........", "..PPPP..", ".PPwPPP.", ".PPPPPP.", "..PPPP..", "........", "........" };
+
+    // 举在头顶的礼物（可以点）
+    void DrawGiftItem(Graphics g)
+    {
+        int fp = SZ / 2, bob = (tick / 8) % 2 == 0 ? 0 : SZ / 4;
+        int x = (COLS * SZ - 8 * fp) / 2, y = (TOP - 4) * SZ - SZ / 2 - bob;
+        string[] art = Gifts[giftIdx];
+        switch (giftIdx)
+        {
+            case 0: case 1:   // 转圈圈，越转越慢
+                if (giftAnim > 0)
+                {
+                    float t = 1 - giftAnim / 45f;
+                    float ang = (float)(Math.Round(720 * (1 - (1 - t) * (1 - t)) / 30) * 30);
+                    GraphicsState gs = g.Save();
+                    g.TranslateTransform(x + 4 * fp, y + 4 * fp);
+                    g.RotateTransform(ang);
+                    DrawArt(g, art, -4 * fp, -4 * fp, fp, 0);
+                    g.Restore(gs);
+                    return;
+                }
+                break;
+            case 2:   // 一大一小地闪
+                if (giftAnim > 0 && (giftAnim / 4) % 2 == 0)
+                {
+                    int f2 = fp + Math.Max(1, fp / 2);
+                    DrawArt(g, art, x + 4 * fp - 4 * f2, y + 4 * fp - 4 * f2, f2, 0);
+                    return;
+                }
+                break;
+            case 3:   // 情书：翻开封口，信纸慢慢抽出来
+                if (giftDone)
+                {
+                    int rise = giftAnim > 0 ? Math.Min(3, Math.Max(0, (50 - giftAnim) / 8)) : 3;
+                    y += 2 * fp;
+                    DrawRows(g, x, y - 2 * fp, fp, "...qq...", ".qqqqqq.", "qqqqqqqq", "qqqqqqqq", "qqqqqqqq");
+                    int pyT = y + (2 - rise) * fp;
+                    g.FillRectangle(Pal['w'], x + fp / 2, pyT, 7 * fp, 6 * fp);
+                    DrawRows(g, x + fp / 2 + fp, pyT + fp, fp, "rr.rr", "rrrrr", ".rrr.", "..r..");
+                    DrawRows(g, x, y + 3 * fp, fp, "llllllll", "lqllllql", "llqllqll", "lllqqlll", "llllllll");
+                    return;
+                }
+                break;
+            case 4:   // 糖果：糖纸抖一抖 → 摊开 → 糖纸飞走
+                if (giftDone)
+                {
+                    string[] a = CandyBare;
+                    if (giftAnim > 25) a = (giftAnim / 3) % 2 == 0 ? CandyFlare : art;
+                    else if (giftAnim > 15) a = CandyOpen;
+                    DrawArt(g, a, x, y, fp, 0);
+                    return;
+                }
+                break;
+        }
+        DrawArt(g, art, x, y, fp, 0);
     }
 
     // 4x4 的像素 Z
@@ -1693,12 +2819,14 @@ class PetForm : Form
         int half = SZ / 2;
         bool held = drag && dragMoved && cs == 0;
         bool climbing = cs != 0 && !drag && vdir != 0 && state == St.Cling;
-        bool walking = (!drag && (state == St.Walk || state == St.GoNest || (state == St.Play && chasing))) || climbing;
+        bool walking = (!drag && (state == St.Walk || state == St.GoNest || state == St.GoWater || (state == St.Play && chasing))) || climbing;
+        bool watering = state == St.Water && !drag;
         bool dance = state == St.Dance && !drag;
         bool bubble = state == St.Bubble && !drag;
         bool stretch = state == St.Stretch && !drag && timer > 8 && timer < 38;
-        bool eat = state == St.Eat && !drag;
-        bool bye = state == St.Bye || bathBye;
+        bool sit = state == St.Meal && !drag;
+        bool eat = (state == St.Eat || (sit && mealPos < meal.Count)) && !drag && foodT >= 1;
+        bool bye = state == St.Bye || bathBye || nestBye;
         bool frozen = state == St.Frozen && !drag;
         bool giftHold = state == St.Gift && giftPhase == 0 && !drag;
         bool giftShow = state == St.Gift && giftPhase == 1 && !drag;
@@ -1709,6 +2837,11 @@ class PetForm : Form
         Pal3 body = frozen ? PalOf(Color.FromArgb(165, 210, 245)) : BodyPal();
         Pal3 armL = frozen ? body : (SleevePal(0) ?? body), armR = frozen ? body : (SleevePal(1) ?? body);
         accDx = 0;
+        int ia = (state == St.Idle && !drag && cs == 0 && !nestDraw) ? idleAct : 0;     // 平时的小动作
+        int ca = (state == St.Cling && !drag && vdir == 0) ? clingAct : 0;              // 墙上的待机
+        bool sipping = ia == 3 && actT % 90 >= 62;                                       // 端起茶杯喝一口
+        bool sneezed = ia == 7 && actT >= 72;
+        bool chewing = ca == 6 && actT % 45 < 26;
 
         // ---- 8 帧动画：相位按时间算，所以速度和以前一样，只是中间多了过渡帧 ----
         int q = Math.Max(1, SZ / 4);
@@ -1730,20 +2863,29 @@ class PetForm : Form
         }
         if (giftHold) oy = -(int)Math.Round(Math.Max(0, Math.Sin(TAU * ((tick / 8) % 5) / 5)) * half);   // 捧着礼物一蹦一蹦
         if (shake > 0) ox = (int)Math.Round(Math.Sin(TAU * ((shake * 5 / 6) % 5) / 5) * half);
-        if ((shiver > 0 || sourT > 0) && !dance && !drag) ox = (tick / 2) % 2 == 0 ? q : -q;   // 冷得 / 酸得发抖
+        if ((shiver > 0 || sourT > 0 || scareT > 0) && !dance && !drag) ox = (tick / 2) % 2 == 0 ? q : -q;   // 冷得 / 酸得发抖
+        if (ia == 4)   // 原地蹦蹦跳跳：整个人（连腿）往上弹
+        {
+            double hh = Math.Sin(Math.PI * (actT % 18) / 18.0);
+            oy -= (int)Math.Round(hh * 5 / 4.0 * SZ / q) * q;
+        }
+        if (ca == 5) ox = (int)Math.Round(Math.Sin(TAU * ((tick / 5) % 10) / 10) * half / q) * q;   // 哼着歌左右晃
 
         // 身体起伏（像素级）：呼吸、走路颠、落地压扁、起跳/伸懒腰拉长
         double bobF = 0, lift = 0;
         if (!drag && !airborne && !dance)
         {
-            if (state == St.Idle || state == St.Eat || state == St.Gift || state == St.Bubble)
+            if (state == St.Idle || state == St.Eat || state == St.Gift || state == St.Bubble || state == St.Meal || (state == St.Cling && vdir == 0))
                 bobF = (1 - Math.Cos(TAU * ((tick * 5 / 56) % 5) / 5)) / 2 * half;
-            if (state == St.Sleep) bobF = (1 - Math.Cos(TAU * ((tick / 18) % 5) / 5)) / 2 * half;
+            if (state == St.Sleep || ca == 3) bobF = (1 - Math.Cos(TAU * ((tick / 18) % 5) / 5)) / 2 * half;
+            if (ia == 4) bobF = 0;
             if (walking) bobF = new[] { 2, 1, 0, 1, 0 }[ph8] * q / 2.0;
         }
         if (squash > 0) bobF = squash * SZ / 5.0;
+        if (sit) bobF += SZ / 2;   // 坐下：身体低半格，腿露出一截
         if (rising) lift = Math.Round(Math.Min(half, -vy / (6f * K) * half) / q) * q;
         if (stretchAmt > 0) lift = stretchAmt * SZ;
+        if (ia == 7 && actT < 72) lift = Math.Min(actT / 24, 2) * q;   // 憋喷嚏：身子慢慢往上仰
         int bobPx = (int)Math.Round(bobF - lift), legStretch = (int)Math.Round(lift);
 
         if (outfit[3] == 6) { oy += bobPx; H(g, coatCape, 2, B + 3, 20, 9); oy -= bobPx; }   // 披风在身后
@@ -1752,13 +2894,15 @@ class PetForm : Form
         int[] legs = { 2, 4, 7, 9 };
         int[] liftA = { 0, 2, 4, 0, 0 }, liftB = { 0, 0, 0, 4, 2 };
         int kickLeg = dir > 0 ? 3 : 0;
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 4; i++)   // 坐着时身体压低一格，腿露出短短一截
         {
             int lp = 0;
             if (walking) lp = (i % 2 == 0 ? liftA : liftB)[ph8] * q;
             if (held) lp = (int)Math.Round((1 + Math.Sin(TAU * ((tick / 2 + i) % 5) / 5)) / 2 * SZ);   // 被拎起来蹬腿
             if (kicking && i == kickLeg) lp = SZ;
             if (falling) lp = half;
+            if (ca == 4) lp = ((tick / 7 + i) % 2 == 0) ? half : 0;                      // 贴着墙晃腿
+            if (ia == 4) lp = (actT % 18 > 3 && actT % 18 < 15) ? q : 0;                 // 跳起来时脚尖收一下
             LegPx(g, body, 2 * legs[i], B + 10, lp, legStretch);
         }
         if (kicking)   // 踢出去的那只脚，8 帧伸出去再收回来
@@ -1778,24 +2922,51 @@ class PetForm : Form
         if (held || falling) { la = B + 2; ra = B + 2; }
         if (rising) { la = B + 5; ra = B + 5; }
         if (stretch || giftShow) { la = B - 2; ra = B - 2; }
+        if (watering) la = B;   // 左手举着喷壶
         if (dance) { int s = (int)Math.Round(Math.Sin(TAU * d8 / 5) * SZ); laPx = -s; raPx = s; }
         if (walking && !climbing) { int s = (int)Math.Round(Math.Sin(TAU * ph8 / 5) * q); laPx += s; raPx -= s; }   // 走路时手前后摆
         if (bye) { ra = B - 2; raPx = (int)Math.Round(Math.Sin(TAU * ((tick / 2) % 5) / 5) * half); }
         if (sleepyBye) { ra = B + 1; raPx = (int)Math.Round(Math.Sin(TAU * ((tick / 5) % 5) / 5) * q); }   // 迷迷糊糊慢慢挥手          // 举高小手挥一挥
+        if (ia == 6 || ca == 2) { ra = B - 2; raPx = (int)Math.Round(Math.Sin(TAU * ((tick / 3) % 5) / 5) * half); }   // 打招呼
+        int yoLen = 0;
+        if (ia == 2)   // 溜溜球：手举在胸前，绳子一放一收
+        {
+            int ph = actT % 28;
+            yoLen = ph < 14 ? ph / 2 : (28 - ph) / 2;
+            ra = B + 2; raPx = yoLen == 0 ? -q : 0;
+        }
+        if (ia == 3) { ra = sipping ? B + 1 : B + 4; }                  // 端着茶杯，喝的时候举高
+        if (ia == 4) { int s = (actT % 18 > 3 && actT % 18 < 15) ? 1 : 0; la = B + 3 - s; ra = B + 3 - s; }   // 跳起来小手扬起
+        if (ia == 5) { la = B + 5; laPx = (int)Math.Round(Math.Sin(TAU * ((tick / 4) % 6) / 6) * q); }   // 扫帚
+        if (ia == 1 && actT >= 110) { la = B - 2; ra = B - 2; }        // 想到了！举手
+        if (ca == 6) ra = chewing ? B + 4 : B + 5;                       // 拿着饼干
+        if (nestDraw && !nestBye && nestAct >= 1 && nestAct <= 5)   // 窝里抱着东西：两只方块小手扶在两边
+        {
+            la = B + 6; ra = B + 6; laPx = 0; raPx = 0;
+            if (nestAct == 1 || nestAct == 4) { laPx = -((tick / 3) % 2) * q; raPx = -(((tick / 3) + 1) % 2) * q; }   // 敲键盘 / 按按钮
+        }
         Block(g, armL, 0, la, 4, 4, laPx);
         Block(g, armR, 20, ra, 4, 4, raPx);
 
         int e1 = 3, e2 = 8, ld = 0;
-        if ((state == St.Walk || state == St.GoNest || state == St.Play) && !drag) ld = dir;
+        if ((state == St.Walk || state == St.GoNest || state == St.GoWater || state == St.Play) && !drag) ld = dir;
+        if (watering) ld = -1;
         if (state == St.Idle && !drag && cs == 0 && shake == 0) ld = lookDir;   // 发呆时眼睛跟着鼠标
         if (climbing) ld = cs < 0 ? vdir : -vdir;
+        if (ia == 1 && actT < 110) ld = (actT / 35) % 2 == 0 ? 1 : -1;   // 想事情：眼珠子转来转去
+        if (ia == 2) ld = 1;
+        if (ia == 5) ld = -1;
+        if (ca == 1) ld = (actT / 30) % 3 == 0 ? 0 : ((actT / 30) % 3 == 1 ? 1 : -1);   // 东张西望
         if (ld > 0) { e1 = 4; e2 = 8; }
         if (ld < 0) { e1 = 3; e2 = 7; }
         double open = (blink >= 1 && blink <= 6) ? BlinkOpen[blink] : 1.0;   // 眨眼：半闭 → 闭上 → 半闭 → 睁开
         if (frozen) open = 1.0;
-        bool closed = !held && !frozen && ((state == St.Sleep && !drag) || open <= 0 || happy > 0
+        bool closed = (nestDraw && nestAct == 6) || !held && !frozen && ((state == St.Sleep && !drag) || open <= 0 || happy > 0
             || dance || stretch || bye || shake > 0 || giftShow || sourT > 0);
         if (sleepyBye) { closed = false; open = 0.5; }   // 半睁着眼
+        if (ia == 4 || ia == 6 || sipping || sneezed || ca == 2 || ca == 3 || ca == 5 || (ca == 6 && chewing)) closed = true;
+        if (ia == 7 && actT < 72 && !closed) open = actT < 40 ? 0.5 : 0;   // 眯眼憋喷嚏
+        if (ia == 7 && actT >= 40 && actT < 72) closed = true;
         int[] eyes = { e1, e2 };
         foreach (int ex in eyes)
         {
@@ -1810,14 +2981,81 @@ class PetForm : Form
 
         if (bubble) R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, SZ);                    // 嘟嘴
         if (stretch) R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, SZ);                   // 打哈欠
-        if (eat && foodY >= (TOP + 4) * SZ)                                              // 嚼嚼嚼（5 帧）
+        if (ia == 7 && actT < 72) R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, actT < 40 ? half : SZ);   // 嘴巴越张越大
+        if (sneezed && actT < 84) R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, SZ);                   // 阿嚏!
+        if (sipping || ca == 5) R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, half);                      // 嘟嘴：喝茶 / 哼歌
+        if (ca == 3) R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, q);                                    // 打盹的小嘴
+        if (chewing)
         {
-            int mh = half + (int)Math.Round((1 + Math.Sin(TAU * ((eatTick / 2) % 5) / 5)) / 2 * half);
+            int mh = half + (int)Math.Round((1 + Math.Sin(TAU * ((actT / 2) % 5) / 5)) / 2 * half);
             R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, mh);
+        }
+        if (ia == 1 && actT >= 110 || ia == 6 || ia == 4) R(g, dark, 5 * SZ, (b + 3) * SZ, 2 * SZ, half);   // 开心地笑
+        if (eat)
+        {
+            int st = FoodStyle(foodIdx), gap = BiteGap(), ph = eatTick % gap;
+            int mh = half + (int)Math.Round((1 + Math.Sin(TAU * ((eatTick / 2) % 5) / 5)) / 2 * half);
+            switch (st)
+            {
+                case 1: case 2: case 6:   // 嘟着嘴喝 / 吸 / 嗦面
+                    R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, half);
+                    break;
+                case 3:           // 伸舌头舔
+                    if (ph < gap / 2 && bites < BitesNeeded())
+                    {
+                        R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, SZ);
+                        R(g, C(240, 110, 135), 6 * SZ, (b + 3) * SZ, SZ + half, half);
+                    }
+                    else R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, q);
+                    break;
+                case 8:           // 张大嘴吞龙虾
+                    R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, SZ + half);
+                    break;
+                case 7:           // 一根一根吃：张嘴接，再嚼
+                    if (ph < gap * 0.6f) R(g, dark, 5 * SZ + half, (b + 3) * SZ - half, SZ, SZ);
+                    else R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, mh);
+                    break;
+                case 4:           // 张大嘴接爆米花
+                    if (ph < 8) R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, SZ + half);
+                    else R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, mh);
+                    break;
+                case 5:           // 含着糖：一边腮帮子鼓起来，左右换
+                    if (eatTick < 8) R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, SZ);
+                    else
+                    {
+                        R(g, dark, 5 * SZ + half, (b + 3) * SZ, SZ, q);
+                        H(g, C(140, 225, 195), bites % 2 == 0 ? 18 : 4, B + 5, 2, 2);   // 糖在这边腮帮子里
+                    }
+                    break;
+                default:          // 嚼嚼嚼（5 帧）
+                    R(g, dark, 5 * SZ, (b + 3) * SZ - half, 2 * SZ, mh);
+                    break;
+            }
         }
 
         DrawAcc(g, B, B, B + 2, 0, eyes);
         accDx = 0;
+        if (blushT > 0 && !frozen)   // 被摸得脸红红
+        {
+            H(g, accBlush, Math.Max(4, 2 * e1 - 2), B + 5, 2, 1);
+            H(g, accBlush, Math.Min(18, 2 * e2 + 2), B + 5, 2, 1);
+        }
+        if (tearT > 0 && !frozen)   // 看悲伤的电影掉眼泪
+        {
+            Brush tb = C(120, 190, 255);
+            int ty = B + 6 + (tick / 5) % 3;
+            H(g, tb, 2 * e1, ty, 1, 1); H(g, tb, 2 * e2 + 1, ty, 1, 1);
+        }
+        if (watering)   // 绿色小喷壶 + 水滴
+        {
+            Brush can = C(90, 170, 120), canDark = C(60, 130, 90), drop = C(120, 190, 255);
+            int tilt = (tick / 6) % 2;
+            H(g, canDark, 1, B - 4, 3, 1);            // 提手
+            H(g, can, 0, B - 3, 4, 3);                // 壶身
+            H(g, can, 0, B - 2 - tilt, 1, 1);         // 壶嘴（一点一点往下倒）
+            for (int k = 0; k < 3; k++)
+                H(g, drop, (k % 2), B + ((tick / 2 + k * 3) % 9), 1, 1);
+        }
         if (milkT > 0) { H(g, Brushes.White, 8, B + 6, 8, 1); H(g, Brushes.White, 9, B + 7, 1, 1); H(g, Brushes.White, 14, B + 7, 1, 1); }   // 牛奶胡子
         if (sourT > 0) PH(g, dark, 9, B + 6, "X.X.X", ".X.X.");   // 酸得嘴巴皱起来
         if (frozen)   // 冰块
@@ -1840,7 +3078,84 @@ class PetForm : Form
             H(g, accGold, 9, by2 - 2, 2, 2); H(g, accGold, 13, by2 - 2, 2, 2);
             H(g, accGoldDark, 11, by2 - 1, 2, 1);
         }
+        if (nestDraw && !nestBye) DrawNestProp(g);
+        if (ia > 0 || ca > 0) DrawIdleProp(g, B, ia, ca, ra, raPx, la, laPx, yoLen, sipping);
         oy = oy0;
+    }
+
+    // 小动作用到的道具：都按“站着”的坐标画，贴墙时会跟着身体一起转过来
+    void DrawIdleProp(Graphics g, int B, int ia, int ca, int ra, int raPx, int la, int laPx, int yoLen, bool sipping)
+    {
+        int half = SZ / 2, q = Math.Max(1, SZ / 4);
+        accDx = 0;
+        if (ia == 1)   // 想事情：头顶冒出 … 然后灯泡亮了
+        {
+            Brush dot = C(150, 150, 175);
+            if (actT < 110)
+            {
+                int n = Math.Min(3, actT / 25);
+                if (n >= 1) H(g, dot, 16, B - 2, 1, 1);
+                if (n >= 2) H(g, dot, 18, B - 4, 2, 2);
+                if (n >= 3) H(g, dot, 20, B - 7, 3, 3);
+            }
+            else
+            {
+                Brush bulb = (actT / 4) % 2 == 0 ? C(255, 225, 80) : C(255, 245, 160);
+                PH(g, bulb, 9, B - 9, ".XXX.", "XXXXX", "XXXXX", ".XXX.");
+                H(g, Brushes.White, 10, B - 8, 1, 1);
+                H(g, C(150, 150, 165), 10, B - 5, 3, 1);
+                H(g, C(110, 110, 125), 10, B - 4, 3, 1);
+                Brush ray = C(255, 210, 60);
+                if ((actT / 6) % 2 == 0) { H(g, ray, 7, B - 8, 1, 1); H(g, ray, 15, B - 8, 1, 1); H(g, ray, 11, B - 10, 1, 1); }
+            }
+        }
+        else if (ia == 2)   // 溜溜球：从右手垂下来
+        {
+            int top = ra + 4;
+            oy += raPx;
+            R(g, C(240, 240, 245), 22 * half - q / 2, top * half, Math.Max(1, q / 2 + 1), yoLen * half);
+            Brush yo = C(230, 70, 90);
+            H(g, yo, 21, top + yoLen, 2, 2);
+            R(g, C(255, 200, 210), 22 * half - q / 2, (top + yoLen) * half + q, Math.Max(1, q), Math.Max(1, q));
+            oy -= raPx;
+        }
+        else if (ia == 3)   // 一杯冒热气的茶，放在右手上
+        {
+            int cy = ra - 3;
+            Brush cup = C(245, 245, 248), tea = C(170, 105, 60), rim = C(200, 200, 210);
+            H(g, cup, 19, cy, 4, 3); H(g, tea, 19, cy, 4, 1); H(g, rim, 19, cy + 2, 4, 1);
+            H(g, rim, 23, cy + 1, 1, 1);   // 杯把
+            if (!sipping)
+            {
+                Brush steam = C(225, 225, 235);
+                int s = (tick / 8) % 2;
+                H(g, steam, 20 + s, cy - 2, 1, 1); H(g, steam, 21 - s, cy - 3, 1, 1);
+                H(g, steam, 22 - s, cy - 2, 1, 1); H(g, steam, 21 + s, cy - 4, 1, 1);
+            }
+        }
+        else if (ia == 5)   // 扫帚：左手握着，扫帚头在地上左右扫
+        {
+            accDx = laPx;
+            Brush stick = C(150, 100, 60), straw = C(225, 185, 90), band = C(190, 70, 60);
+            PH(g, stick, 1, la + 1, "..X", ".X.", ".X.", ".X.", "X..", "X..", "X..");
+            H(g, band, 0, B + 12, 3, 1);
+            H(g, straw, 0, B + 13, 4, 1);
+            PH(g, C(200, 160, 70), 0, B + 13, "X.X.");
+            accDx = 0;
+        }
+        else if (ca == 6)   // 饼干：咬一口少一块
+        {
+            int bitesTaken = (actT / 45) % 4;
+            if (bitesTaken < 3)
+            {
+                int cy = ra + 1;
+                Brush ck = C(215, 160, 95), chip = C(90, 55, 35);
+                if (bitesTaken == 0) PH(g, ck, 16, cy, ".XXX", "XXXX", "XXXX", ".XX.");
+                else if (bitesTaken == 1) PH(g, ck, 16, cy, "..XX", ".XXX", "XXXX", ".XX.");   // 咬掉一口
+                else PH(g, ck, 16, cy, "....", "..XX", ".XXX", "..X.");
+                H(g, chip, 18, cy + 1, 1, 1); if (bitesTaken < 2) H(g, chip, 17, cy + 2, 1, 1);
+            }
+        }
     }
 
     // ---------- 像素明暗：底色 + 顶部高光 + 底部/右侧阴影 ----------
@@ -2152,12 +3467,47 @@ class PetForm : Form
         R(g, baseGray, 2 * SZ, ROWS * SZ - half, 8 * SZ, half);
     }
 
+    // 自检：平时的 7 种小动作 + 墙上的 6 种待机，每种 5 帧
+    public static void RenderIdles(string path)
+    {
+        PetForm f = new PetForm(true);
+        int W = f.ClientSize.Width, pad = 12, perRow = 5;
+        int[][] at = {
+            new[] { 10, 30, 60, 90, 115 }, new[] { 0, 4, 8, 12, 20 }, new[] { 10, 30, 50, 70, 80 },
+            new[] { 0, 5, 9, 13, 17 }, new[] { 4, 8, 12, 16, 20 }, new[] { 2, 4, 6, 8, 10 }, new[] { 10, 45, 60, 74, 90 } };
+        int rows = 7 + 6;
+        using (Bitmap bmp = new Bitmap(pad + perRow * (W + pad), pad + rows * (W + pad)))
+        {
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(40, 44, 52));
+                for (int row = 0; row < rows; row++)
+                    for (int k = 0; k < perRow; k++)
+                    {
+                        f.parts.Clear(); f.drag = false; f.side = 0; f.vdir = 0; f.happy = 0; f.blink = 0; f.squash = 0;
+                        f.shake = 0; f.blushT = 0; f.lookDir = 0; f.outfit = new int[SLOTS]; f.inNest = false; f.nestDraw = false;
+                        f.idleAct = 0; f.clingAct = 0;
+                        if (row < 7) { f.state = St.Idle; f.idleAct = row + 1; f.actT = at[row][k]; f.tick = at[row][k] * 3; }
+                        else
+                        {
+                            f.state = St.Cling; f.side = row % 2 == 0 ? 1 : -1; f.clingAct = row - 6;
+                            f.actT = new[] { 5, 30, 50, 70, 100 }[k]; f.tick = k * 7;
+                        }
+                        g.TranslateTransform(pad + k * (W + pad), pad + row * (W + pad));
+                        f.Draw(g);
+                        g.ResetTransform();
+                    }
+            }
+            bmp.Save(path);
+        }
+    }
+
     // ---------- 自检：把各种画面画成图 ----------
     public static void Render(string path)
     {
         PetForm f = new PetForm(true);
-        int W = f.ClientSize.Width, pad = 12, n = 35, perRow = 5, S = f.SZ;
-        using (Bitmap bmp = new Bitmap(Math.Max(pad + perRow * (W + pad), 16 * 30 + pad), pad + 8 * (W + pad)))
+        int W = f.ClientSize.Width, pad = 12, n = 45, perRow = 5, S = f.SZ;
+        using (Bitmap bmp = new Bitmap(Math.Max(pad + perRow * (W + pad), Foods.Length * 30 + pad), pad + 10 * (W + pad)))
         {
             using (Graphics g = Graphics.FromImage(bmp))
             {
@@ -2169,15 +3519,16 @@ class PetForm : Form
                     f.frame = 0; f.tick = 0; f.blink = 0; f.happy = 0; f.squash = 0; f.dir = 1;
                     f.hot = 0; f.shake = 0; f.timer = 20; f.lookDir = 0;
                     f.giftPhase = 0; f.kickAnim = 0; f.chasing = false; f.inNest = false;
-                    f.iceHP = 3; f.shiver = 0; f.bloat = 0; f.milkT = 0; f.sourT = 0; f.sleepyBye = false; f.bathBye = false; f.vy = 0;
+                    f.iceHP = 3; f.shiver = 0; f.bloat = 0; f.milkT = 0; f.sourT = 0; f.sleepyBye = false; f.bathBye = false; f.vy = 0; f.blushT = 0;
                     f.state = St.Idle; f.outfit = new int[SLOTS];
+                    f.giftAnim = 0; f.giftDone = false; f.meal.Clear(); f.mealPos = 0; f.foodT = 1; f.bites = 0; f.eatTick = 0;
                     int k8 = i % 5;   // 每一行是同一个动作的 5 帧
                     switch (i / 5)
                     {
                         case 0: f.state = St.Walk; f.tick = (k8 * 16 + 4) / 5; break;                       // 走路
                         case 1: f.state = St.Dance; f.tick = (k8 * 24 + 4) / 5; break;                      // 跳舞
                         case 2: f.state = St.Bye; f.tick = 2 * k8; break;             // 挥手
-                        case 3: f.state = St.Computer; f.tick = 2 * k8; break;        // 打字
+                        case 3: if (k8 == 0) { f.happy = 3; f.blushT = 50; f.AddHearts(2); } if (k8 == 1 || k8 == 2) { f.state = St.Water; f.tick = 6 * k8; } if (k8 == 3) { f.state = St.Cling; f.side = -1; f.happy = 3; f.blushT = 50; } if (k8 == 4) { f.state = St.Water; f.tick = 3; f.outfit = new[] { 7, 0, 0, 4 }; } break;   // 摸头脸红 + 浇水
                         case 5:
                             if (k8 == 0) f.state = St.Frozen;
                             if (k8 == 1) { f.state = St.Frozen; f.iceHP = 1; }
@@ -2193,13 +3544,31 @@ class PetForm : Form
                             if (k8 == 4) { f.state = St.Frozen; f.iceHP = 2; f.outfit = new[] { 5, 0, 3, 8 }; }
                             break;
                         case 4: f.squash = 5 - k8; if (k8 == 0) { f.state = St.Jump; f.vy = -9f * f.K; f.squash = 0; } break;   // 起跳 + 落地
+                        case 7:   // 各种吃法：喝咖啡、吸牛奶、舔冰淇淋、含薄荷糖、抛爆米花
+                            {
+                                int[] fi = { LOBSTER, MILK, ICE, NOODLES, FRIES };
+                                int[] et = { 40, 5, 3, 10, 4 }, bt = { 2, 2, 1, 1, 2 };
+                                f.state = St.Eat; f.foodIdx = fi[k8]; f.eatTick = et[k8]; f.bites = bt[k8];
+                                float tx, ty; f.FoodTarget(out tx, out ty); f.foodFromX = tx; f.foodFromY = ty;
+                            }
+                            break;
+                        case 8:   // 套餐坐着吃 / 礼物：转花、拆情书、剥糖 / 贴墙摸头
+                            if (k8 <= 1)
+                            {
+                                f.meal.AddRange(new[] { 2, 3, 12 }); f.state = St.Meal; f.mealPos = k8;
+                                f.NextMealFood(); f.foodT = k8 == 0 ? 1 : 0.5f; f.eatTick = 6;
+                            }
+                            if (k8 == 2) { f.state = St.Gift; f.giftPhase = 1; f.giftIdx = 0; f.giftAnim = 30; }
+                            if (k8 == 3) { f.state = St.Gift; f.giftPhase = 1; f.giftIdx = 3; f.giftDone = true; }
+                            if (k8 == 4) { f.state = St.Gift; f.giftPhase = 1; f.giftIdx = 4; f.giftDone = true; f.giftAnim = 20; }
+                            break;
                     }
                     g.TranslateTransform(pad + (i % perRow) * (W + pad), pad + (i / perRow) * (W + pad));
                     f.Draw(g);
                     g.ResetTransform();
                 }
                 // 最后两行：6 种玩具 + 16 种食物
-                int ty0 = pad + 7 * (W + pad);
+                int ty0 = pad + 9 * (W + pad);
                 for (int k = 0; k < 6; k++)
                 {
                     g.TranslateTransform(pad + k * 60, ty0);
@@ -2232,6 +3601,75 @@ class PetForm : Form
             bmp.Save(path.Replace(".png", "_nests.png"), ImageFormat.Png);
         }
 
+        // 窝里做事：睡觉 + 6 种
+        using (Bitmap bmp = new Bitmap(pad + 4 * (NW + pad), pad + 2 * (NH + pad)))
+        {
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(40, 44, 52));
+                for (int a = 0; a < 7; a++)
+                {
+                    NestLook L = new NestLook(); L.Type = a % 4; L.Decor = 2;
+                    f.state = a == 0 ? St.Sleep : St.Nest; f.nestAct = a; f.tick = 3; f.nestBite = 1; f.nestSnack = 1; f.happy = 0; f.blink = 0;
+                    g.TranslateTransform(pad + (a % 4) * (NW + pad), pad + (a / 4) * (NH + pad));
+                    NestForm.DrawNest(g, S, L, f, new int[SLOTS]);
+                    g.ResetTransform();
+                }
+            }
+            bmp.Save(path.Replace(".png", "_nestacts.png"), ImageFormat.Png);
+        }
+
+        // 背景：3 种场景 × 4 种天气（小窝放在上面）
+        int BW2 = BackdropForm.BC * S, BH2 = BackdropForm.BR * S;
+        using (Bitmap bmp = new Bitmap(pad + 4 * (BW2 + pad), pad + 3 * (BH2 + pad)))
+        {
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(40, 44, 52));
+                BackdropForm.FlashFrom = 0; BackdropForm.FlashTo = 2;
+                for (int sc = 1; sc <= 3; sc++)
+                    for (int w = 1; w <= 4; w++)
+                    {
+                        NestLook L = new NestLook(); L.Bg = sc; L.Wall = w - 1; L.RoomDecor = 255; L.OutDecor = 511; L.Decor = 2;
+                        g.TranslateTransform(pad + (w - 1) * (BW2 + pad), pad + (sc - 1) * (BH2 + pad));
+                        BackdropForm.Draw(g, S, L, w, w == 3 ? 6 : 40);
+                        g.TranslateTransform((BW2 - NW) / 2, BH2 - NH);
+                        f.state = St.Nest; f.nestAct = 4; f.tick = 3;
+                        NestForm.DrawNest(g, S, L, f, new int[SLOTS]);
+                        g.ResetTransform();
+                    }
+            }
+            bmp.Save(path.Replace(".png", "_backdrops.png"), ImageFormat.Png);
+        }
+        // 灯光：夜晚小屋开着落地灯 / 星空 / 没有背景
+        int LW = LightForm.LC * S, LH = LightForm.LR * S;
+        using (Bitmap bmp = new Bitmap(pad + 3 * (LW + pad), pad + LH + pad))
+        {
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.FromArgb(120, 130, 150));
+                for (int k = 0; k < 3; k++)
+                {
+                    NestLook L = new NestLook(); L.Bg = k == 0 ? 1 : (k == 1 ? 3 : 0); L.RoomDecor = 255; L.OutDecor = 511;
+                    int x0 = pad + k * (LW + pad), y0 = pad;
+                    int bx = x0 + (LW - BackdropForm.BC * S) / 2, by = y0 + LH - BackdropForm.BR * S;
+                    g.TranslateTransform(bx, by);
+                    BackdropForm.Draw(g, S, L, 1, 40);
+                    g.TranslateTransform((BackdropForm.BC * S - NW) / 2, BackdropForm.BR * S - NH);
+                    f.state = St.Nest; f.nestAct = 5; f.movieGenre = 3; f.tick = 3;
+                    NestForm.DrawNest(g, S, L, f, new int[SLOTS]);
+                    g.ResetTransform();
+                    // 旁边站着一只 Claude，看它被照到
+                    f.state = St.Idle;
+                    g.TranslateTransform(x0 + LW / 2 + 10 * S, y0 + LH - 12 * S);
+                    f.Draw(g);
+                    g.ResetTransform();
+                    using (Bitmap lb = LightForm.Build(S, L, k == 2 ? 0.5f : 0.55f, k == 0, 1)) g.DrawImage(lb, x0, y0, LW, LH);
+                }
+            }
+            bmp.Save(path.Replace(".png", "_light.png"), ImageFormat.Png);
+        }
+
         // 浴缸：3 个阶段
         int BW = BathForm.BC * S, BH = BathForm.BR * S;
         using (Bitmap bmp = new Bitmap(pad + 3 * (BW + pad), pad + BH + pad))
@@ -2260,9 +3698,9 @@ class PetForm : Form
     {
         PetForm pet = new PetForm(true), pv = new PetForm(true);
         pet.outfit = new[] { 3, 2, 1, 3 };
-        pet.Look.Type = 0; pet.Look.Decor = 1 | 2 | 8 | 32 | 64; pet.Look.PlushL = 1; pet.Look.PlushR = 6; pet.Look.Pattern = 1; pet.Look.FlagColor = 4;
+        pet.Look.Type = 0; pet.Look.Decor = 1 | 2 | 8 | 32 | 64; pet.Look.PlushL = 1; pet.Look.PlushR = 6; pet.Look.Pattern = 1; pet.Look.FlagColor = 4; pet.Look.Light = 2; pet.Look.Bg = 3;
         int[] tabsToShoot = { 0, 0, 1, 1, 1, 1 };
-        int[] scrolls = { 0, 9999, 0, 380, 9999, 9999 };
+        int[] scrolls = { 0, 9999, 0, 760, 9999, 9999 };
         for (int l = 0; l < tabsToShoot.Length; l++)
         {
             pet.En = l == 5;
@@ -2395,6 +3833,11 @@ class NestForm : Form
         if (!moved) pet.OnNestClicked(); else pet.OnNestDropped();
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x21) { m.Result = (IntPtr)3; return; }   // 点小窝不抢到最前面
+        base.WndProc(ref m);
+    }
     protected override void OnPaint(PaintEventArgs e)
     {
         DrawNest(e.Graphics, SZ, pet.Look, pet.InNest ? pet : null, pet.Outfit);
@@ -2565,8 +4008,8 @@ class NestForm : Form
                 GraphicsState st = g.Save();
                 if (t == 4) { using (GraphicsPath door = DoorPath(sz)) g.SetClip(door, CombineMode.Intersect); }
                 else g.IntersectClip(new Rectangle(0, 0, NC * sz, P(ClipAt[t], sz)));
-                g.TranslateTransform(6 * sz, 0);
-                sleeper.DrawSleeper(g, sz, fit);
+                g.TranslateTransform(6 * sz, sleeper.NestLift(sz));
+                sleeper.DrawNester(g, sz, fit);
                 g.Restore(st);
             }
 
@@ -2602,7 +4045,7 @@ class NestForm : Form
                     FR(g, light, sz, 7.6f, 10.6f, 8.8f, 0.4f);
                     break;
             }
-            if (sleeper != null && PawsAt[t])
+            if (sleeper != null && PawsAt[t] && sleeper.NestLift(sz) == 0)
             {
                 Color sl = PetForm.SleeveColor(fit[3], 0), sr = PetForm.SleeveColor(fit[3], 1);
                 using (Brush pl = new SolidBrush(sl.IsEmpty ? PetForm.BodyCol : sl))
@@ -3387,6 +4830,659 @@ class ToyForm : Form
 }
 
 // ---------- 设置窗口：语言 + 装扮 + 小窝（小窝的装饰和玩偶都在小窝页里，用滚轮上下看） ----------
+// 灯光层：天黑时把背景压暗，小窝和落地灯周围亮起暖光；Claude 走到附近就会被照到
+class LightForm : Form
+{
+    internal const int LC = 48, LR = 28;   // 比背景大一圈
+    internal static readonly Color[] GlowColors = {
+        Color.FromArgb(255, 206, 96), Color.FromArgb(255, 160, 70), Color.FromArgb(255, 150, 190), Color.FromArgb(130, 180, 255),
+        Color.FromArgb(140, 230, 150), Color.FromArgb(190, 150, 255), Color.FromArgb(255, 245, 225) };
+    internal static readonly string[] GlowZh = { "暖黄", "橘色", "粉色", "蓝色", "绿色", "紫色", "白色" };
+    internal static readonly string[] GlowEn = { "Warm yellow", "Orange", "Pink", "Blue", "Green", "Purple", "White" };
+    readonly int SZ;
+    string key;
+    Bitmap bmp;
+    byte alpha = 255;
+    internal void Fade(double op)
+    {
+        byte a = (byte)Math.Max(0, Math.Min(255, (int)(op * 255)));
+        if (a == alpha) return;
+        alpha = a;
+        if (bmp != null) Push(Left, Top);
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
+    [StructLayout(LayoutKind.Sequential)] struct SZS { public int cx, cy; }
+    [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte op, flags, alpha, fmt; }
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
+    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZS size, IntPtr src, ref PT srcPos, int key, ref BLEND bl, int flags);
+
+    public LightForm(int sz)
+    {
+        SZ = sz;
+        Text = "Claude Light";
+        AutoScaleMode = AutoScaleMode.None;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        ClientSize = new Size(LC * sz, LR * sz);
+    }
+    protected override CreateParams CreateParams
+    {
+        get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x08000000 | 0x20 | 0x80000; return cp; }
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+
+    internal void Render(NestLook L, float dk, bool lamp, int twinkle, int x, int y)
+    {
+        bool fairy = L.Bg == 1 && (L.RoomDecor & 128) != 0 && dk > 0;
+        string k = L.Bg + "," + dk + "," + lamp + "," + (fairy ? twinkle : -1) + "," + L.GlowAlpha + "," + L.GlowSpread + "," + L.GlowSize + "," + L.GlowColor + "," + L.GlowOn;
+        if (k == key && bmp != null)
+        {
+            if (Left != x || Top != y) Push(x, y);
+            return;
+        }
+        key = k;
+        if (bmp != null) bmp.Dispose();
+        bmp = Build(SZ, L, dk, lamp, twinkle);
+        Push(x, y);
+    }
+
+    void Push(int x, int y)
+    {
+        IntPtr screen = GetDC(IntPtr.Zero), mem = CreateCompatibleDC(screen);
+        IntPtr hb = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(mem, hb);
+        PT dst = new PT(); dst.x = x; dst.y = y;
+        PT src = new PT();
+        SZS size = new SZS(); size.cx = bmp.Width; size.cy = bmp.Height;
+        BLEND bl = new BLEND(); bl.op = 0; bl.alpha = alpha; bl.fmt = 1;
+        UpdateLayeredWindow(Handle, screen, ref dst, ref size, mem, ref src, 0, ref bl, 2);
+        SelectObject(mem, old); DeleteObject(hb); DeleteDC(mem); ReleaseDC(IntPtr.Zero, screen);
+    }
+
+    // 一格一格算光：离光源越近越亮（分成几圈，保持像素感），远处被夜色压暗
+    internal static Bitmap Build(int sz, NestLook L, float dk, bool lamp, int twinkle)
+    {
+        int W = LC * sz, H = LR * sz, blk = Math.Max(2, sz / 2);
+        float ox = (LC - BackdropForm.BC) / 2f, oy = LR - BackdropForm.BR;   // 背景在灯光层里的位置
+        List<float[]> src = new List<float[]>();   // x, y, 半径, 强度, r, g, b, 中间全亮的比例
+        if (dk > 0 && L.GlowOn)   // 小窝的主灯光：大小、扩散、透明度、颜色都能调
+        {
+            Color gc = GlowColors[L.GlowColor];
+            src.Add(new float[] { LC / 2f, LR - 7f, 5 + L.GlowSize * 0.14f, 0.2f + L.GlowAlpha * 0.008f, gc.R, gc.G, gc.B, 0.7f - L.GlowSpread * 0.007f });
+        }                      // 小窝周围的暖光
+        if (lamp) src.Add(new float[] { ox + 36.6f, oy + 10f, 13, 1.0f, 255, 214, 110 });                   // 落地灯
+        if (L.Bg == 1 && (L.RoomDecor & 128) != 0 && dk > 0)
+        {
+            Color[] lc = { Color.FromArgb(255, 110, 110), Color.FromArgb(255, 210, 90), Color.FromArgb(120, 210, 130), Color.FromArgb(110, 170, 255) };
+            for (int i = 0; i < 20; i++)
+                if ((twinkle + i) % 3 != 0) src.Add(new float[] { ox + i * 2 + 1f, oy + 1.7f, 1.8f, 0.7f, lc[i % 4].R, lc[i % 4].G, lc[i % 4].B });
+        }
+        Bitmap b = new Bitmap(W, H, PixelFormat.Format32bppArgb);
+        int[] px = new int[W * H];
+        for (int by = 0; by < H; by += blk)
+            for (int bx = 0; bx < W; bx += blk)
+            {
+                float cx = (bx + blk / 2f) / sz, cy = (by + blk / 2f) / sz;
+                float lit = 0, cr = 0, cg = 0, cb = 0;
+                foreach (float[] s in src)
+                {
+                    float d = (float)Math.Sqrt((cx - s[0]) * (cx - s[0]) + (cy - s[1]) * (cy - s[1]));
+                    if (d >= s[2]) continue;
+                    float core = s.Length > 7 ? s[7] * s[2] : 0;   // 中间这一圈是全亮的，外面慢慢暗下去
+                    float t2 = d <= core ? 1 : 1 - (d - core) / (s[2] - core);
+                    float f = (float)Math.Ceiling(t2 * 4) / 4 * s[3];
+                    lit += f; cr += s[4] * f; cg += s[5] * f; cb += s[6] * f;
+                }
+                // 夜色覆盖范围：有背景就盖住背景（边缘慢慢淡出），没有背景就只在小窝附近
+                float cov;
+                if (L.Bg > 0)
+                {
+                    float dx = Math.Max(Math.Max(ox - cx, cx - (ox + BackdropForm.BC)), 0), dy = Math.Max(oy - cy, 0);
+                    cov = Math.Max(0, 1 - (float)Math.Sqrt(dx * dx + dy * dy) / 4);
+                }
+                else
+                {
+                    float d = (float)Math.Sqrt((cx - LC / 2f) * (cx - LC / 2f) + (cy - (LR - 6f)) * (cy - (LR - 6f)));
+                    cov = Math.Max(0, 1 - d / 16) * 0.8f;
+                }
+                cov = (float)Math.Ceiling(cov * 4) / 4;
+                float lc2 = Math.Min(1, lit);
+                // 光圈里：夜色退掉，换成暖黄色；越靠近光源越黄（不再和夜色混成灰色）
+                float ad = dk * cov * (1 - lc2) * (1 - lc2);
+                float aw = lc2 * (0.34f + 0.12f * dk);
+                float a = Math.Min(0.62f, ad + aw);
+                a = (float)Math.Round(a * 16) / 16;
+                if (a <= 0.01f) continue;
+                float wr = lit > 0 ? cr / lit : 0, wg = lit > 0 ? cg / lit : 0, wb = lit > 0 ? cb / lit : 0;
+                float tw = (float)Math.Sqrt(lc2);
+                int r = (int)Math.Min(255, 12 + (wr - 12) * tw), g = (int)Math.Min(255, 16 + (wg - 16) * tw), bl = (int)Math.Min(255, 42 + (wb - 42) * tw);                int argb = ((int)(a * 255) << 24) | (r << 16) | (g << 8) | bl;
+                for (int yy = by; yy < Math.Min(H, by + blk); yy++)
+                    for (int xx = bx; xx < Math.Min(W, bx + blk); xx++) px[yy * W + xx] = argb;
+            }
+        BitmapData bd = b.LockBits(new Rectangle(0, 0, W, H), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        Marshal.Copy(px, 0, bd.Scan0, px.Length);
+        b.UnlockBits(bd);
+        return b;
+    }
+}
+// 套餐：挑最多 3 样食物放到餐盘上，端给 Claude
+// 小窝后面的背景：温馨小屋（带窗户）/ 草地 / 星空，会下雨、打雷、下雪
+class BackdropForm : Form
+{
+    internal const int BC = 40, BR = 24;
+    readonly PetForm pet;
+    readonly int SZ;
+
+    internal static readonly string[] SceneZh = { "无", "温馨小屋", "草地", "星空" };
+    internal static readonly string[] SceneEn = { "None", "Cozy room", "Meadow", "Starry night" };
+    internal static readonly Color[] WallColors = {
+        Color.FromArgb(238, 214, 190), Color.FromArgb(200, 222, 242), Color.FromArgb(246, 206, 216),
+        Color.FromArgb(204, 230, 200), Color.FromArgb(222, 208, 240), Color.FromArgb(88, 96, 128) };
+    internal static readonly string[] WallZh = { "奶油", "天蓝", "樱花粉", "薄荷绿", "薰衣草", "夜空蓝" };
+    internal static readonly string[] WallEn = { "Cream", "Sky", "Sakura", "Mint", "Lavender", "Midnight" };
+    internal static readonly string[] RoomZh = { "窗帘", "挂画", "书架", "落地灯", "地毯", "挂钟", "大盆栽", "小彩灯" };
+    internal static readonly string[] RoomEn = { "Curtains", "Painting", "Bookshelf", "Floor lamp", "Rug", "Clock", "Big plant", "Fairy lights" };
+    internal static readonly string[] OutZh = { "郁金香", "小雏菊", "向日葵", "蘑菇", "蝴蝶", "木栅栏", "小树", "草丛", "萤火虫" };
+    internal static readonly string[] OutEn = { "Tulips", "Daisies", "Sunflowers", "Mushrooms", "Butterflies", "Fence", "Tree", "Bushes", "Fireflies" };
+    internal static readonly string[] WeatherZh = { "自动", "晴天", "下雨", "打雷", "下雪" };
+    internal static readonly string[] WeatherEn = { "Auto", "Sunny", "Rain", "Thunder", "Snow" };
+
+    public BackdropForm(PetForm pet, int sz)
+    {
+        this.pet = pet; SZ = sz;
+        Text = "Claude Backdrop";
+        AutoScaleMode = AutoScaleMode.None;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = Color.FromArgb(255, 0, 255);
+        TransparencyKey = BackColor;
+        DoubleBuffered = true;
+        ClientSize = new Size(BC * sz, BR * sz);
+    }
+    protected override CreateParams CreateParams
+    {
+        // 不进 Alt+Tab、不抢焦点、鼠标穿透（点背景就像点桌面）
+        get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x08000000 | 0x20 | 0x80000; return cp; }
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override void OnPaint(PaintEventArgs e) { Draw(e.Graphics, SZ, pet.Look, pet.Weather, pet.Tick); }
+
+    // 打雷：不规则地闪一下
+    internal static int FlashFrom = -999, FlashTo = -999;   // Claude 那边随机安排的闪电时间
+    internal static bool Flash(int tick) { return tick >= FlashFrom && tick < FlashTo; }
+    static bool BoltNow(int tick) { return tick >= FlashTo && tick < FlashTo + 6; }
+
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int i, int v);
+    bool clickable;
+    internal void SetClickable(bool on)
+    {
+        if (on == clickable || !IsHandleCreated) return;
+        clickable = on;
+        int ex = GetWindowLong(Handle, -20);
+        SetWindowLong(Handle, -20, on ? ex & ~0x20 : ex | 0x20);
+        Cursor = on ? Cursors.Hand : Cursors.Default;
+    }
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left && clickable) pet.ToggleLamp();
+    }
+    // 点它的时候不要被系统提到最前面
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x21) { m.Result = (IntPtr)3; return; }   // WM_MOUSEACTIVATE → MA_NOACTIVATE
+        base.WndProc(ref m);
+    }
+
+    static void F(Graphics g, Brush b, int s, float x, float y, float w, float h)
+    {
+        int x0 = (int)Math.Round(x * s), y0 = (int)Math.Round(y * s);
+        int x1 = (int)Math.Round((x + w) * s), y1 = (int)Math.Round((y + h) * s);
+        if (x1 > x0 && y1 > y0) g.FillRectangle(b, x0, y0, x1 - x0, y1 - y0);
+    }
+    static Brush B(int r, int g, int b) { return new SolidBrush(Color.FromArgb(r, g, b)); }
+    static Color SkyOf(int weather, bool night)
+    {
+        if (night) return weather >= 2 ? Color.FromArgb(28, 30, 50) : Color.FromArgb(32, 38, 78);
+        switch (weather)
+        {
+            case 2: return Color.FromArgb(128, 142, 162);
+            case 3: return Color.FromArgb(78, 82, 104);
+            case 4: return Color.FromArgb(196, 206, 222);
+            default: return Color.FromArgb(150, 205, 250);
+        }
+    }
+
+    internal static void Draw(Graphics g, int s, NestLook L, int weather, int tick)
+    {
+        if (L.Bg == 0) return;
+        if (L.Bg == 1) DrawRoom(g, s, L, weather, tick);
+        else DrawOutdoor(g, s, L, weather, tick, L.Bg == 3);
+    }
+
+    // 天气粒子：雨、雪（在给定的格子范围里）
+    static void Weather(Graphics g, int s, int weather, int tick, float x0, float y0, float w, float h, int n)
+    {
+        if (weather == 2 || weather == 3)
+        {
+            using (Brush drop = B(190, 210, 240))
+                for (int i = 0; i < n; i++)
+                {
+                    float x = x0 + ((i * 37) % 100) / 100f * w;
+                    float y = y0 + ((tick * 0.45f + i * 7.3f) % h);
+                    F(g, drop, s, x, y, 0.15f, 0.7f);
+                }
+        }
+        else if (weather == 4)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                float x = x0 + ((i * 41) % 100) / 100f * w + (float)Math.Sin((tick + i * 20) / 18.0) * 0.4f;
+                float y = y0 + ((tick * 0.08f + i * 5.1f) % h);
+                F(g, Brushes.White, s, x, y, 0.3f, 0.3f);
+            }
+        }
+    }
+    static void Bolt(Graphics g, int s, float x, float y)
+    {
+        using (Brush yb = B(255, 236, 120))
+        {
+            F(g, yb, s, x, y, 0.5f, 1.2f); F(g, yb, s, x - 0.5f, y + 1.2f, 0.5f, 1.2f);
+            F(g, yb, s, x, y + 2.4f, 0.5f, 1.2f); F(g, yb, s, x - 0.5f, y + 3.6f, 0.5f, 1f);
+        }
+    }
+
+    static void DrawRoom(Graphics g, int s, NestLook L, int weather, int tick)
+    {
+        int D = L.RoomDecor;
+        Color wc = WallColors[L.Wall];
+        using (Brush wall = new SolidBrush(wc))
+        using (Brush stripe = new SolidBrush(NestForm.Mix(wc, Color.White, 0.25f)))
+        using (Brush wallDark = new SolidBrush(NestForm.Mix(wc, Color.Black, 0.2f)))
+        using (Brush wood = B(196, 146, 100))
+        using (Brush woodDark = B(165, 118, 78))
+        using (Brush white = B(250, 248, 242))
+        using (Brush brown = B(130, 88, 58))
+        {
+            F(g, wall, s, 0, 0, 40, 20);
+            for (int x = 2; x < 40; x += 4) F(g, stripe, s, x, 0, 1, 20);
+            F(g, wallDark, s, 0, 19.4f, 40, 0.6f);
+            F(g, wood, s, 0, 20, 40, 4);
+            F(g, woodDark, s, 0, 21.9f, 40, 0.2f);
+            for (int x = 0; x < 40; x += 5) { F(g, woodDark, s, x + 0.0f, 20, 0.2f, 1.9f); F(g, woodDark, s, x + 2.5f, 22.1f, 0.2f, 1.9f); }
+
+            // ---- 窗户：天气都在玻璃里 ----
+            F(g, white, s, 2, 3, 10, 9);
+            using (Brush sky = new SolidBrush(Flash(tick) && weather == 3 ? Color.FromArgb(235, 235, 250) : SkyOf(weather, false)))
+                F(g, sky, s, 2.5f, 3.5f, 9, 8);
+            GraphicsState gs = g.Save();
+            g.SetClip(new Rectangle((int)(2.5f * s), (int)(3.5f * s), 9 * s, 8 * s));
+            if (weather == 1)
+            {
+                using (Brush sun = B(255, 214, 90)) F(g, sun, s, 8.5f, 4.3f, 2, 2);
+                float cx = 2 + ((tick / 12f) % 13);
+                F(g, Brushes.White, s, cx, 6.5f, 2.5f, 0.8f); F(g, Brushes.White, s, cx + 0.6f, 5.9f, 1.3f, 0.6f);
+            }
+            else
+            {
+                using (Brush cloud = B(weather == 3 ? 60 : 168, weather == 3 ? 62 : 176, weather == 3 ? 80 : 190))
+                { F(g, cloud, s, 2.5f, 3.5f, 9, 1.2f); F(g, cloud, s, 4, 4.7f, 5, 0.8f); }
+            }
+            if (weather == 3 && BoltNow(tick)) Bolt(g, s, 8, 4.6f);
+            Weather(g, s, weather, tick, 2.5f, 3.5f, 9, 8, 14);
+            g.Restore(gs);
+            F(g, white, s, 6.75f, 3.5f, 0.5f, 8); F(g, white, s, 2.5f, 7.25f, 9, 0.5f);
+            F(g, white, s, 1.5f, 12, 11, 0.7f);
+
+            if ((D & 1) != 0)   // 窗帘
+                using (Brush cur = B(225, 120, 120)) using (Brush curD = B(195, 95, 100))
+                {
+                    F(g, brown, s, 1, 2.4f, 12, 0.4f);
+                    F(g, cur, s, 1.1f, 2.8f, 2, 10); F(g, curD, s, 1.8f, 2.8f, 0.3f, 10);
+                    F(g, cur, s, 10.9f, 2.8f, 2, 10); F(g, curD, s, 11.6f, 2.8f, 0.3f, 10);
+                }
+            if ((D & 2) != 0)   // 挂画：小山和太阳
+            {
+                F(g, brown, s, 16.5f, 3, 6, 5);
+                using (Brush c = B(190, 225, 245)) F(g, c, s, 17, 3.5f, 5, 4);
+                using (Brush c = B(110, 175, 110)) { F(g, c, s, 17, 6, 5, 1.5f); F(g, c, s, 18, 5.2f, 2, 0.8f); }
+                using (Brush c = B(255, 200, 80)) F(g, c, s, 20.6f, 4, 0.8f, 0.8f);
+            }
+            if ((D & 4) != 0)   // 书架
+            {
+                F(g, brown, s, 28, 8, 9, 0.5f);
+                Color[] bk = { Color.FromArgb(220, 90, 90), Color.FromArgb(90, 140, 220), Color.FromArgb(240, 190, 70), Color.FromArgb(110, 180, 120), Color.FromArgb(170, 120, 210) };
+                float bx = 28.4f;
+                for (int i = 0; i < 7; i++)
+                {
+                    float h = 2 + (i * 3 % 4) * 0.4f;
+                    using (Brush c = new SolidBrush(bk[i % bk.Length])) F(g, c, s, bx, 8 - h, 0.9f, h);
+                    bx += 1.1f;
+                }
+                using (Brush c = B(120, 180, 110)) { F(g, c, s, 36, 6.3f, 0.8f, 1.7f); F(g, c, s, 35.6f, 5.8f, 0.6f, 0.8f); }
+            }
+            if ((D & 8) != 0)   // 落地灯
+            {
+                using (Brush c = B(120, 120, 130)) { F(g, c, s, 36.4f, 11, 0.4f, 9); F(g, c, s, 35.4f, 19.6f, 2.4f, 0.4f); }
+                using (Brush c = L.LampOn ? B(250, 220, 150) : B(200, 196, 184)) F(g, c, s, 35, 8.5f, 3.2f, 2.5f);
+                if (L.LampOn) using (Brush c = B(255, 244, 200)) F(g, c, s, 35.4f, 11, 2.4f, 0.4f);
+            }
+            if ((D & 16) != 0)   // 地毯
+                using (Brush c = B(205, 125, 150)) using (Brush c2 = B(240, 180, 195))
+                { F(g, c, s, 3, 21.4f, 34, 2.2f); F(g, c2, s, 3.5f, 22.3f, 33, 0.4f); }
+            if ((D & 32) != 0)   // 挂钟：指针会走
+            {
+                F(g, brown, s, 24.3f, 2.8f, 2.4f, 2.4f);
+                F(g, white, s, 24.6f, 3.1f, 1.8f, 1.8f);
+                using (Brush c = B(60, 60, 70))
+                {
+                    F(g, c, s, 25.4f, 3.4f, 0.2f, 0.7f);
+                    int k = (tick / 30) % 4;
+                    float[] dx = { 0.2f, 0, -0.6f, 0 }, dy = { 0, 0.2f, 0, -0.6f };
+                    F(g, c, s, 25.4f + dx[k], 4f + dy[k], k % 2 == 0 ? 0.6f : 0.2f, k % 2 == 0 ? 0.2f : 0.6f);
+                }
+            }
+            if ((D & 64) != 0)   // 大盆栽
+            {
+                using (Brush c = B(80, 160, 90)) using (Brush c2 = B(60, 130, 75))
+                {
+                    F(g, c, s, 1.2f, 13, 1.2f, 4); F(g, c2, s, 2.6f, 12, 1.2f, 5); F(g, c, s, 3.8f, 14, 1.2f, 3);
+                    F(g, c2, s, 0.6f, 15, 1, 2);
+                }
+                using (Brush c = B(200, 110, 75)) F(g, c, s, 1, 17, 4, 3);
+                using (Brush c = B(170, 90, 60)) F(g, c, s, 1, 17, 4, 0.5f);
+            }
+            if ((D & 128) != 0)   // 小彩灯：一闪一闪
+            {
+                using (Brush wire = B(90, 90, 100)) F(g, wire, s, 0, 1.2f, 40, 0.15f);
+                Color[] lc = { Color.FromArgb(255, 110, 110), Color.FromArgb(255, 210, 90), Color.FromArgb(120, 210, 130), Color.FromArgb(110, 170, 255) };
+                for (int i = 0; i < 20; i++)
+                {
+                    bool on = ((tick / 15) + i) % 3 != 0;
+                    using (Brush c = new SolidBrush(on ? lc[i % 4] : NestForm.Mix(lc[i % 4], Color.Black, 0.4f)))
+                        F(g, c, s, i * 2 + 0.7f, 1.35f, 0.6f, 0.7f);
+                }
+            }
+        }
+    }
+
+    static void DrawOutdoor(Graphics g, int s, NestLook L, int weather, int tick, bool night)
+    {
+        int D = L.OutDecor;
+        bool flash = weather == 3 && Flash(tick);
+        Color skyC = flash ? Color.FromArgb(220, 222, 240) : SkyOf(weather, night);
+        using (Brush sky = new SolidBrush(skyC))
+        using (Brush sky2 = new SolidBrush(NestForm.Mix(skyC, Color.White, night ? 0.08f : 0.18f)))
+        using (Brush hill = night ? B(45, 85, 65) : B(120, 190, 120))
+        using (Brush grass = night ? B(55, 105, 70) : B(140, 205, 110))
+        using (Brush grassD = night ? B(40, 85, 55) : B(110, 180, 90))
+        using (Brush stemB = night ? B(50, 110, 60) : B(70, 150, 70))
+        {
+            F(g, sky, s, 0, 0, 40, 16);
+            F(g, sky2, s, 0, 8, 40, 8);
+            if (night)
+            {
+                for (int i = 0; i < 24 && weather < 2; i++)   // 阴天下雨看不到星星
+                {
+                    bool tw = (tick / 20 + i) % 5 != 0;
+                    using (Brush st = B(255, 245, tw ? 200 : 130))
+                        F(g, st, s, (i * 53 % 400) / 10f, (i * 29 % 110) / 10f, tw ? 0.3f : 0.2f, tw ? 0.3f : 0.2f);
+                }
+                string[] moon = { "..XXX.", ".XX...", "XX....", "XX....", ".XX...", "..XXX." };   // 月牙
+                using (Brush m = B(250, 235, 170))
+                    for (int r = 0; r < 6; r++)
+                        for (int c = 0; c < 6; c++)
+                            if (moon[r][c] == 'X') F(g, m, s, 32 + c * 0.45f, 1.6f + r * 0.45f, 0.45f, 0.45f);
+            }
+            else if (weather == 1)
+            {
+                using (Brush sun = B(255, 214, 90)) F(g, sun, s, 32, 2, 3, 3);
+                using (Brush sun = B(255, 235, 150)) { F(g, sun, s, 33.2f, 0.8f, 0.6f, 0.8f); F(g, sun, s, 35.4f, 3.2f, 0.8f, 0.6f); F(g, sun, s, 30.8f, 3.2f, 0.8f, 0.6f); }
+            }
+            if (!night || weather >= 2)   // 云
+                for (int k = 0; k < 3; k++)
+                {
+                    float cx = ((tick / 14f + k * 16) % 52) - 8;
+                    int cv = weather == 1 ? 255 : (weather == 3 ? 90 : 185);
+                    if (night) cv = 60;
+                    using (Brush c = B(cv, cv, Math.Min(255, cv + 10)))
+                    { F(g, c, s, cx, 3 + k * 2, 4, 1); F(g, c, s, cx + 1, 2.3f + k * 2, 2, 0.8f); }
+                }
+            if (weather == 3 && BoltNow(tick)) Bolt(g, s, 25, 2);
+
+            // 远处的小山
+            F(g, hill, s, 0, 13, 12, 3); F(g, hill, s, 2, 12, 7, 1);
+            F(g, hill, s, 25, 12.5f, 15, 3.5f); F(g, hill, s, 29, 11.5f, 8, 1);
+
+            if ((D & 64) != 0)   // 小树
+            {
+                using (Brush c = B(120, 85, 55)) F(g, c, s, 3, 10, 1.6f, 6);
+                using (Brush c = night ? B(40, 95, 60) : B(80, 160, 85)) { F(g, c, s, 0.6f, 5, 6.4f, 5.5f); F(g, c, s, 1.6f, 4, 4.4f, 1); }
+                using (Brush c = night ? B(55, 115, 70) : B(110, 190, 105)) F(g, c, s, 1.4f, 5.6f, 2.4f, 2);
+                if (!night) using (Brush c = B(230, 80, 80)) { F(g, c, s, 4.6f, 7, 0.6f, 0.6f); F(g, c, s, 2.2f, 8.6f, 0.6f, 0.6f); }
+            }
+
+            F(g, grass, s, 0, 15.5f, 40, 8.5f);
+            for (int i = 0; i < 14; i++) F(g, grassD, s, (i * 31 % 400) / 10f, 16.5f + (i * 7 % 70) / 10f, 0.8f, 0.3f);
+            if (weather == 4) using (Brush sn = B(240, 244, 250)) { F(g, sn, s, 0, 15.5f, 40, 0.6f); }
+
+            if ((D & 32) != 0)   // 木栅栏
+                using (Brush c = B(215, 175, 125))
+                {
+                    F(g, c, s, 0, 16.6f, 8.5f, 0.4f); F(g, c, s, 0, 18, 8.5f, 0.4f);
+                    F(g, c, s, 31.5f, 16.6f, 8.5f, 0.4f); F(g, c, s, 31.5f, 18, 8.5f, 0.4f);
+                    for (int x = 0; x < 3; x++) { F(g, c, s, 0.5f + x * 3, 16, 0.6f, 3.2f); F(g, c, s, 32 + x * 3, 16, 0.6f, 3.2f); }
+                }
+            if ((D & 128) != 0)   // 草丛
+                using (Brush c = night ? B(35, 80, 50) : B(90, 165, 85))
+                {
+                    F(g, c, s, 6.5f, 17.5f, 3, 1.5f); F(g, c, s, 7, 17, 2, 0.5f);
+                    F(g, c, s, 30.5f, 18, 3.4f, 1.5f); F(g, c, s, 31, 17.5f, 2.4f, 0.5f);
+                }
+            if ((D & 4) != 0)   // 向日葵
+                foreach (float x in new[] { 5.5f, 35 })
+                {
+                    F(g, stemB, s, x + 0.6f, 15.5f, 0.3f, 5);
+                    using (Brush c = B(250, 205, 50)) F(g, c, s, x, 14, 1.6f, 1.6f);
+                    using (Brush c = B(130, 90, 50)) F(g, c, s, x + 0.5f, 14.5f, 0.6f, 0.6f);
+                }
+            if ((D & 1) != 0)   // 郁金香
+            {
+                Color[] tc = { Color.FromArgb(235, 80, 90), Color.FromArgb(250, 150, 190), Color.FromArgb(250, 200, 70), Color.FromArgb(180, 120, 220) };
+                float[] tx = { 2, 3.6f, 34.4f, 36.4f, 38 };
+                for (int i = 0; i < tx.Length; i++)
+                {
+                    F(g, stemB, s, tx[i] + 0.3f, 20, 0.25f, 1.6f);
+                    using (Brush c = new SolidBrush(tc[i % 4])) { F(g, c, s, tx[i], 19.2f, 0.85f, 0.8f); F(g, c, s, tx[i] - 0.1f, 18.9f, 0.25f, 0.4f); F(g, c, s, tx[i] + 0.7f, 18.9f, 0.25f, 0.4f); }
+                }
+            }
+            if ((D & 2) != 0)   // 小雏菊
+                foreach (float[] p in new[] { new[] { 1f, 22 }, new[] { 6, 21.5f }, new[] { 33, 22.4f }, new[] { 38.4f, 21.2f }, new[] { 4.2f, 23 } })
+                {
+                    F(g, Brushes.White, s, p[0] - 0.3f, p[1], 0.9f, 0.3f); F(g, Brushes.White, s, p[0], p[1] - 0.3f, 0.3f, 0.9f);
+                    using (Brush c = B(250, 210, 60)) F(g, c, s, p[0], p[1], 0.3f, 0.3f);
+                }
+            if ((D & 8) != 0)   // 蘑菇
+                foreach (float x in new[] { 1.4f, 37 })
+                {
+                    F(g, Brushes.White, s, x + 0.4f, 21.6f, 0.6f, 0.9f);
+                    using (Brush c = B(225, 70, 70)) F(g, c, s, x, 20.8f, 1.4f, 0.8f);
+                    F(g, Brushes.White, s, x + 0.3f, 21, 0.25f, 0.25f); F(g, Brushes.White, s, x + 0.9f, 20.9f, 0.25f, 0.25f);
+                }
+            if ((D & 16) != 0 && weather != 2 && weather != 3)   // 蝴蝶（下雨就躲起来了）
+            {
+                Color[] bc = { Color.FromArgb(250, 160, 200), Color.FromArgb(150, 200, 255) };
+                for (int k = 0; k < 2; k++)
+                {
+                    float bx = (k == 0 ? 6 : 33) + (float)Math.Sin((tick + k * 50) / 22.0) * 3;
+                    float by = 11 + (float)Math.Sin((tick + k * 30) / 13.0) * 1.5f;
+                    bool up = (tick / 4 + k) % 2 == 0;
+                    using (Brush c = new SolidBrush(bc[k]))
+                    {
+                        F(g, c, s, bx - 0.5f, by - (up ? 0.4f : 0), 0.5f, up ? 0.7f : 0.4f);
+                        F(g, c, s, bx + 0.2f, by - (up ? 0.4f : 0), 0.5f, up ? 0.7f : 0.4f);
+                    }
+                    using (Brush c = B(60, 50, 50)) F(g, c, s, bx, by - 0.2f, 0.2f, 0.6f);
+                }
+            }
+            if ((D & 256) != 0)   // 萤火虫（晚上更亮）
+                for (int i = 0; i < 7; i++)
+                {
+                    if ((tick / 9 + i * 3) % 5 == 0) continue;
+                    float fx = (i * 57 % 400) / 10f + (float)Math.Sin((tick + i * 40) / 30.0) * 1.2f;
+                    float fy = 9 + (i * 23 % 90) / 10f + (float)Math.Cos((tick + i * 25) / 25.0);
+                    using (Brush c = night ? B(240, 255, 120) : B(200, 220, 90)) F(g, c, s, fx, fy, 0.35f, 0.35f);
+                }
+            Weather(g, s, weather, tick, 0, 0, 40, 24, 36);
+        }
+    }
+}
+
+class MealForm : Form
+{
+    const int MAX = 3;
+    readonly PetForm pet;
+    readonly float K;
+    readonly bool en;
+    readonly List<int> picks = new List<int>();
+    readonly PictureBox tray = new PictureBox();
+    readonly Label hint = new Label();
+    readonly Button btnGo = new Button(), btnClear = new Button();
+    readonly ToolTip tip = new ToolTip();
+    static readonly Color Accent = Color.FromArgb(217, 119, 87);
+
+    int S(int v) { return (int)Math.Round(v * K); }
+    string T(string zh, string e) { return en ? e : zh; }
+
+    public MealForm(PetForm pet, float k, bool en)
+    {
+        this.pet = pet; K = k; this.en = en;
+        AutoScaleMode = AutoScaleMode.None;
+        Font = new Font("Microsoft YaHei UI", 9f);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false; MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen;
+        TopMost = true;
+        BackColor = Color.White;
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        Text = T("套餐", "Meal set");
+        ClientSize = new Size(S(424), S(396));
+
+        Label top = new Label();
+        top.Text = T("点食物放到餐盘上（最多 3 样），点餐盘上的食物可以拿掉。", "Click foods to put them on the tray (up to 3). Click a food on the tray to take it off.");
+        top.SetBounds(S(16), S(12), S(392), S(36));
+        Controls.Add(top);
+
+        int cell = S(48);
+        for (int i = 0; i < PetForm.Foods.Length; i++)
+        {
+            int idx = i;
+            Button b = new Button();
+            b.FlatStyle = FlatStyle.Flat;
+            b.FlatAppearance.BorderColor = Color.FromArgb(215, 215, 222);
+            b.FlatAppearance.MouseOverBackColor = Color.FromArgb(255, 236, 226);
+            b.BackColor = Color.White;
+            b.Image = PetForm.ArtIcon(PetForm.Foods[i], Math.Max(3, S(4)));
+            b.SetBounds(S(16) + (i % 8) * (cell + S(1)), S(52) + (i / 8) * (cell + S(1)), cell, cell);
+            tip.SetToolTip(b, en ? PetForm.FoodEn[i] : PetForm.FoodZh[i]);
+            b.Click += delegate { Add(idx); };
+            Controls.Add(b);
+        }
+
+        int gy = S(52) + ((PetForm.Foods.Length + 7) / 8) * (cell + S(1)) + S(8);
+        tray.SetBounds(S(16), gy, S(392), S(110));
+        tray.BackColor = Color.FromArgb(236, 226, 212);
+        tray.Paint += PaintTray;
+        tray.MouseClick += delegate (object s, MouseEventArgs e)
+        {
+            int slot = e.X * MAX / tray.Width;
+            if (slot < picks.Count) { picks.RemoveAt(slot); Changed(); }
+        };
+        Controls.Add(tray);
+
+        hint.SetBounds(S(16), gy + S(118), S(392), S(20));
+        hint.ForeColor = Color.Gray;
+        Controls.Add(hint);
+
+        btnClear.Text = T("清空", "Clear");
+        btnClear.SetBounds(S(232), gy + S(144), S(80), S(30));
+        btnClear.Click += delegate { picks.Clear(); Changed(); };
+        Controls.Add(btnClear);
+
+        btnGo.Text = T("开饭!", "Serve!");
+        btnGo.SetBounds(S(328), gy + S(144), S(80), S(30));
+        ClientSize = new Size(S(424), gy + S(186));
+        btnGo.BackColor = Accent; btnGo.ForeColor = Color.White;
+        btnGo.FlatStyle = FlatStyle.Flat; btnGo.FlatAppearance.BorderSize = 0;
+        btnGo.Click += delegate
+        {
+            if (picks.Count == 0) { hint.Text = T("先放点吃的到餐盘上~", "Put some food on the tray first~"); return; }
+            pet.ServeMeal(picks.ToArray());
+            Close();
+        };
+        Controls.Add(btnGo);
+        Changed();
+    }
+
+    // 自检：把套餐窗口画成图
+    internal static void RenderSelf(string path)
+    {
+        PetForm p = new PetForm(true);
+        MealForm m = new MealForm(p, p.K, false);
+        m.Add(2); m.Add(5); m.Add(12);
+        m.StartPosition = FormStartPosition.Manual; m.Location = new Point(-4000, -4000);
+        m.Show(); Application.DoEvents();
+        using (Bitmap bmp = new Bitmap(m.Width, m.Height))
+        {
+            m.DrawToBitmap(bmp, new Rectangle(0, 0, m.Width, m.Height));
+            bmp.Save(path, ImageFormat.Png);
+        }
+    }
+
+    void Add(int idx)
+    {
+        if (picks.Count >= MAX) { hint.Text = T("餐盘满啦，最多 3 样~", "The tray is full (3 max)~"); return; }
+        picks.Add(idx); Changed();
+    }
+
+    void Changed()
+    {
+        tray.Invalidate();
+        hint.Text = picks.Count < MAX ? T("餐盘上还能放 ", "Room for ") + (MAX - picks.Count) + T(" 样", " more")
+            : T("餐盘满啦，点「开饭!」端给 Claude~", "Tray is full. Click Serve!~");
+        btnGo.Enabled = picks.Count > 0;
+    }
+
+    void PaintTray(object sender, PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        int w = tray.Width, h = tray.Height;
+        int ty = h - S(26);
+        using (Brush wood = new SolidBrush(Color.FromArgb(170, 120, 80)), rim = new SolidBrush(Color.FromArgb(130, 88, 58)))
+        {
+            g.FillRectangle(wood, S(12), ty, w - S(24), S(12));
+            g.FillRectangle(rim, S(8), ty - S(6), S(6), S(18));
+            g.FillRectangle(rim, w - S(14), ty - S(6), S(6), S(18));
+        }
+        int fp = Math.Max(3, S(7)), slotW = w / MAX;
+        for (int i = 0; i < picks.Count; i++)
+            PetForm.DrawArt(g, PetForm.Foods[picks[i]], i * slotW + (slotW - 8 * fp) / 2, ty - 8 * fp, fp, 0);
+        if (picks.Count == 0)
+            using (Brush tb = new SolidBrush(Color.FromArgb(170, 160, 150)))
+                g.DrawString(T("（空餐盘）", "(empty tray)"), Font, tb, w / 2 - S(36), S(30));
+    }
+}
+
 class SettingsForm : Form
 {
     readonly PetForm pet, pv;
@@ -3410,12 +5506,31 @@ class SettingsForm : Form
     readonly CheckBox chkNest = new CheckBox();
     readonly Label lblType = new Label(), lblColor = new Label(), lblPattern = new Label(), lblHint = new Label();
     readonly List<Button> typeBtns = new List<Button>(), colorBtns = new List<Button>(), patternBtns = new List<Button>();
-    readonly Button btnBed = new Button();
+    readonly Button btnBed = new Button(), btnHang = new Button();
     readonly Label lblDecor = new Label(), lblFlag = new Label(), lblFlagNote = new Label();
     readonly List<CheckBox> decorChks = new List<CheckBox>();
     readonly List<Button> flagBtns = new List<Button>();
     readonly Label lblPlushL = new Label(), lblPlushR = new Label(), lblPlushNote = new Label();
     readonly List<Button> plushLBtns = new List<Button>(), plushRBtns = new List<Button>();
+    // 可以收起的两段：小窝 / 背景
+    readonly Button hdrNest = new Button(), hdrBg = new Button(), hdrLight = new Button();
+    readonly Panel secNest = new Panel(), secBg = new Panel(), secLight = new Panel();
+    readonly Label scrollEnd = new Label();
+    bool nestFolded, bgFolded, lightFolded;
+    readonly Label lblScene = new Label(), lblWall = new Label(), lblRoom = new Label(), lblOut = new Label(), lblWeather = new Label(), lblBgNote = new Label();
+    readonly List<Button> sceneBtns = new List<Button>(), wallBtns = new List<Button>(), weatherBtns = new List<Button>();
+    readonly List<CheckBox> roomChks = new List<CheckBox>(), outChks = new List<CheckBox>();
+    readonly Label lblLight = new Label();
+    readonly List<Button> lightBtns = new List<Button>();
+    CheckBox chkLamp;
+    readonly Label lblGlow = new Label(), lblGlowNote = new Label(), lblGlowColor = new Label();
+    readonly Label[] glowNames = { new Label(), new Label(), new Label() };
+    readonly TrackBar[] glowBars = { new TrackBar(), new TrackBar(), new TrackBar() };
+    readonly List<Button> glowBtns = new List<Button>();
+    Bitmap glowPrev; string glowPrevKey;
+    CheckBox chkGlow;
+    readonly Label lblBgAlpha = new Label();
+    readonly TrackBar bgAlphaBar = new TrackBar();
 
     readonly ToolTip tip = new ToolTip();
     readonly Timer anim = new Timer();
@@ -3472,7 +5587,7 @@ class SettingsForm : Form
         {
             if (blinkT > 0) { blinkT--; if (blinkT == 0) UpdateSnap(); }
             else if (rand.Next(25) == 0) { blinkT = 2; UpdateSnap(); }
-            if (++zt % 5 == 0) nestPreview.Invalidate();
+            if (++zt % 5 == 0 || pet.Look.Bg > 0) nestPreview.Invalidate();
         };
         anim.Start();
         FormClosed += delegate { anim.Stop(); };
@@ -3573,12 +5688,23 @@ class SettingsForm : Form
         tNest.Controls.Add(nestCaption);
         Btn(tNest, btnBed, 8, 238, 200, 32);
         btnBed.Click += delegate { pet.GoSleepNow(); };
+        Btn(tNest, btnHang, 8, 276, 200, 32);
+        btnHang.Click += delegate { pet.GoNestNow(); };
         lblHint.AutoSize = false;
-        lblHint.SetBounds(S(8), S(280), S(205), S(110));
+        lblHint.SetBounds(S(8), S(316), S(205), S(80));
         lblHint.ForeColor = Color.FromArgb(110, 110, 120);
         tNest.Controls.Add(lblHint);
 
-        Panel P = ScrollPanel(tNest, nestPanel);
+        ScrollPanel(tNest, nestPanel);
+        Header(hdrNest, delegate { nestFolded = !nestFolded; LayoutNestPanel(); });
+        Header(hdrBg, delegate { bgFolded = !bgFolded; LayoutNestPanel(); });
+        Header(hdrLight, delegate { lightFolded = !lightFolded; LayoutNestPanel(); });
+        secLight.SetBounds(0, 0, S(392), S(330)); secLight.BackColor = Color.White; nestPanel.Controls.Add(secLight);
+        secNest.SetBounds(0, 0, S(392), S(764)); secNest.BackColor = Color.White; nestPanel.Controls.Add(secNest);
+        secBg.SetBounds(0, 0, S(392), S(556)); secBg.BackColor = Color.White; nestPanel.Controls.Add(secBg);
+        scrollEnd.Size = new Size(1, 1); nestPanel.Controls.Add(scrollEnd);
+        Panel P = secNest;
+        BuildBgSection(secBg);
 
         chkNest.AutoSize = true;
         chkNest.Location = new Point(S(8), S(6));
@@ -3685,7 +5811,176 @@ class SettingsForm : Form
             }
         lblPlushNote.ForeColor = Color.FromArgb(130, 130, 140);
         Lbl(P, lblPlushNote, 8, 730);
-        Spacer(P, 0, S(764));
+
+        // 灯光（单独一段）：小窝的主灯光
+        P = secLight;
+        lblGlow.Font = new Font(Font, FontStyle.Bold);
+        Lbl(P, lblGlow, 8, 6);
+        lblGlowNote.ForeColor = Color.FromArgb(130, 130, 140);
+        Lbl(P, lblGlowNote, 8, 28);
+        chkGlow = Toggle(P, 256, 6);
+        chkGlow.Width = S(120); chkGlow.Height = S(40);
+        chkGlow.CheckedChanged += delegate { if (syncing) return; pet.Look.GlowOn = chkGlow.Checked; pet.NestLookChanged(); };
+        for (int i = 0; i < 3; i++)
+        {
+            int idx = i;
+            glowNames[i].AutoSize = false; glowNames[i].SetBounds(S(8), S(52 + i * 40), S(80), S(24));
+            glowNames[i].TextAlign = ContentAlignment.MiddleLeft;
+            P.Controls.Add(glowNames[i]);
+            TrackBar tb = glowBars[i];
+            tb.Minimum = 0; tb.Maximum = 100; tb.TickStyle = TickStyle.None; tb.AutoSize = false;
+            tb.SetBounds(S(90), S(54 + i * 40), S(280), S(32));
+            tb.ValueChanged += delegate
+            {
+                if (syncing) return;
+                int v = glowBars[idx].Value;
+                if (idx == 0) pet.Look.GlowAlpha = v; else if (idx == 1) pet.Look.GlowSpread = v; else pet.Look.GlowSize = v;
+                pet.GlowChanged(); nestPreview.Invalidate();
+            };
+            P.Controls.Add(tb);
+        }
+        Lbl(P, lblGlowColor, 8, 176);
+        for (int i = 0; i < LightForm.GlowColors.Length; i++)
+        {
+            int idx = i;
+            Button b = Swatch(P, LightForm.GlowColors[i], 8 + i * 47, 198);
+            b.Click += delegate { pet.Look.GlowColor = idx; pet.GlowChanged(); RefreshAll(); };
+            glowBtns.Add(b);
+        }
+        LayoutNestPanel();
+    }
+
+    void Header(Button h, EventHandler click)
+    {
+        h.FlatStyle = FlatStyle.Flat;
+        h.FlatAppearance.BorderColor = Line;
+        h.BackColor = Color.FromArgb(248, 244, 240);
+        h.TextAlign = ContentAlignment.MiddleLeft;
+        h.Font = new Font(Font, FontStyle.Bold);
+        h.Cursor = Cursors.Hand;
+        h.Size = new Size(S(384), S(30));
+        h.Click += click;
+        nestPanel.Controls.Add(h);
+    }
+
+    // 摆放两段内容；收起的那段只剩标题
+    void LayoutNestPanel()
+    {
+        int y = nestPanel.AutoScrollPosition.Y + S(4);
+        hdrNest.Location = new Point(S(4), y); y += S(34);
+        secNest.Visible = !nestFolded;
+        if (!nestFolded) { secNest.Location = new Point(0, y); y += secNest.Height; }
+        hdrLight.Location = new Point(S(4), y); y += S(34);
+        secLight.Visible = !lightFolded;
+        if (!lightFolded) { secLight.Location = new Point(0, y); y += secLight.Height; }
+        hdrBg.Location = new Point(S(4), y); y += S(34);
+        secBg.Visible = !bgFolded;
+        if (!bgFolded) { secBg.Location = new Point(0, y); y += secBg.Height; }
+        scrollEnd.Location = new Point(0, y + S(6));
+        hdrNest.Text = (nestFolded ? "▶  " : "▼  ") + T("小窝", "Bed");
+        hdrBg.Text = (bgFolded ? "▶  " : "▼  ") + T("背景", "Background");
+        hdrLight.Text = (lightFolded ? "▶  " : "▼  ") + T("灯光", "Lighting");
+    }
+
+    CheckBox Toggle(Control parent, int x, int y)
+    {
+        CheckBox c = new CheckBox();
+        c.Appearance = Appearance.Button;
+        c.FlatStyle = FlatStyle.Flat;
+        c.TextAlign = ContentAlignment.MiddleCenter;
+        c.SetBounds(S(x), S(y), S(70), S(34));
+        c.Cursor = Cursors.Hand;
+        c.FlatAppearance.CheckedBackColor = AccentSoft;
+        parent.Controls.Add(c);
+        return c;
+    }
+
+    void BuildBgSection(Panel P)
+    {
+        Lbl(P, lblScene, 8, 6);
+        for (int i = 0; i < BackdropForm.SceneZh.Length; i++)
+        {
+            int idx = i;
+            Button b = new Button();
+            b.SetBounds(S(8 + i * 94), S(28), S(90), S(74));
+            b.FlatStyle = FlatStyle.Flat;
+            b.TextImageRelation = TextImageRelation.ImageAboveText;
+            b.Cursor = Cursors.Hand;
+            b.Click += delegate { pet.Look.Bg = idx; pet.NestLookChanged(); };
+            sceneBtns.Add(b); P.Controls.Add(b);
+        }
+        Lbl(P, lblWall, 8, 112);
+        for (int i = 0; i < BackdropForm.WallColors.Length; i++)
+        {
+            int idx = i;
+            Button b = Swatch(P, BackdropForm.WallColors[i], 8 + i * 47, 134);
+            b.Click += delegate { pet.Look.Wall = idx; if (pet.Look.Bg == 0) pet.Look.Bg = 1; pet.NestLookChanged(); };
+            wallBtns.Add(b);
+        }
+        Lbl(P, lblRoom, 8, 184);
+        for (int i = 0; i < BackdropForm.RoomZh.Length; i++)
+        {
+            int bit = 1 << i;
+            CheckBox c = Toggle(P, 8 + (i % 5) * 75, 206 + (i / 5) * 40);
+            c.CheckedChanged += delegate
+            {
+                if (syncing) return;
+                pet.Look.RoomDecor = c.Checked ? (pet.Look.RoomDecor | bit) : (pet.Look.RoomDecor & ~bit);
+                pet.NestLookChanged();
+            };
+            roomChks.Add(c);
+        }
+        Lbl(P, lblOut, 8, 292);
+        for (int i = 0; i < BackdropForm.OutZh.Length; i++)
+        {
+            int bit = 1 << i;
+            CheckBox c = Toggle(P, 8 + (i % 5) * 75, 314 + (i / 5) * 40);
+            c.CheckedChanged += delegate
+            {
+                if (syncing) return;
+                pet.Look.OutDecor = c.Checked ? (pet.Look.OutDecor | bit) : (pet.Look.OutDecor & ~bit);
+                pet.NestLookChanged();
+            };
+            outChks.Add(c);
+        }
+        Lbl(P, lblWeather, 8, 400);
+        for (int i = 0; i < BackdropForm.WeatherZh.Length; i++)
+        {
+            int idx = i;
+            Button b = new Button();
+            b.SetBounds(S(8 + i * 75), S(422), S(70), S(34));
+            b.FlatStyle = FlatStyle.Flat;
+            b.Cursor = Cursors.Hand;
+            b.Click += delegate { pet.Look.Weather = idx; pet.NestLookChanged(); };
+            weatherBtns.Add(b); P.Controls.Add(b);
+        }
+        Lbl(secLight, lblLight, 8, 250);
+        for (int i = 0; i < 3; i++)
+        {
+            int idx = i;
+            Button b = new Button();
+            b.SetBounds(S(8 + i * 75), S(272), S(70), S(34));
+            b.FlatStyle = FlatStyle.Flat;
+            b.Cursor = Cursors.Hand;
+            b.Click += delegate { pet.Look.Light = idx; pet.NestLookChanged(); };
+            lightBtns.Add(b); secLight.Controls.Add(b);
+        }
+        chkLamp = Toggle(secLight, 8 + 3 * 75, 272);
+        chkLamp.Width = S(145);
+        chkLamp.CheckedChanged += delegate { if (syncing) return; pet.Look.LampOn = chkLamp.Checked; pet.NestLookChanged(); };
+        lblBgNote.ForeColor = Color.FromArgb(130, 130, 140);
+        lblBgNote.AutoSize = false;
+        lblBgNote.SetBounds(S(8), S(508), S(370), S(44));
+        Lbl(P, lblBgAlpha, 8, 466);
+        bgAlphaBar.Minimum = 10; bgAlphaBar.Maximum = 100; bgAlphaBar.TickStyle = TickStyle.None; bgAlphaBar.AutoSize = false;
+        bgAlphaBar.SetBounds(S(130), S(462), S(240), S(32));
+        bgAlphaBar.ValueChanged += delegate
+        {
+            if (syncing) return;
+            pet.Look.BgAlpha = bgAlphaBar.Value; pet.BgAlphaChanged(); nestPreview.Invalidate();
+        };
+        P.Controls.Add(bgAlphaBar);
+        P.Controls.Add(lblBgNote);
     }
 
     void Btn(Control parent, Button b, int x, int y, int w, int h)
@@ -3728,6 +6023,12 @@ class SettingsForm : Form
         rZh.Checked = !en; rEn.Checked = en;
         chkNest.Checked = pet.NestOn;
         for (int i = 0; i < decorChks.Count; i++) decorChks[i].Checked = (L.Decor & (1 << i)) != 0;
+        for (int i = 0; i < roomChks.Count; i++) roomChks[i].Checked = (L.RoomDecor & (1 << i)) != 0;
+        for (int i = 0; i < outChks.Count; i++) outChks[i].Checked = (L.OutDecor & (1 << i)) != 0;
+        if (chkLamp != null) chkLamp.Checked = L.LampOn;
+        if (chkGlow != null) chkGlow.Checked = L.GlowOn;
+        bgAlphaBar.Value = Math.Max(10, Math.Min(100, L.BgAlpha));
+        glowBars[0].Value = L.GlowAlpha; glowBars[1].Value = L.GlowSpread; glowBars[2].Value = L.GlowSize;
         syncing = false;
 
         Text = T("Claude 桌宠 · 设置", "Claude Pet · Settings");
@@ -3756,10 +6057,12 @@ class SettingsForm : Form
         lblType.Text = T("种类", "Type");
         lblColor.Text = T("颜色", "Color");
         lblPattern.Text = T("花纹（皮肤）", "Pattern (skin)");
-        lblHint.Text = T("· 右边可以用滚轮往下翻：装饰、小旗子颜色、玩偶都在下面\n· 小窝可以在桌面上随意拖动\n· 点一下小窝里的 Claude 才会把它叫醒",
-                         "· Scroll down on the right for decorations, flag color and plushies\n· Drag the bed anywhere on the desktop\n· Click Claude in the bed to wake it up");
+        lblHint.Text = T("· 右边分成「小窝」「灯光」「背景」三段，点标题可以展开 / 收起\n· 小窝可以在桌面上随意拖动\n· 睡着时点一下叫醒，醒着时再点会跳出来",
+                         "· Three sections on the right: Bed, Lighting, Background. Click a title to open / fold it\n· Drag the bed anywhere on the desktop\n· Click once to wake it, click again to make it hop out");
         btnBed.Text = T("现在去小窝睡觉 Zz", "Go to bed now Zz");
         btnBed.Enabled = pet.NestOn;
+        btnHang.Text = T("去小窝里玩 ♪", "Hang out in the bed ♪");
+        btnHang.Enabled = pet.NestOn;
         int tsz = Math.Max(2, (S(120) - 10) / NestForm.NC);
         for (int i = 0; i < typeBtns.Count; i++)
         {
@@ -3817,6 +6120,69 @@ class SettingsForm : Form
             tip.SetToolTip(plushLBtns[i], nm); tip.SetToolTip(plushRBtns[i], nm);
         }
 
+        lblGlow.Text = T("小窝的发光", "Bed glow");
+        lblGlowNote.Text = T("只影响小窝自带的那圈光", "Only the bed's own glow");
+        chkGlow.Text = L.GlowOn ? T("发光：开", "Glow: on") : T("发光：关", "Glow: off");
+        chkGlow.FlatAppearance.BorderColor = L.GlowOn ? Accent : Line;
+        lblBgAlpha.Text = T("背景透明度", "Background opacity");
+        string[] gz = { "透明度", "扩散范围", "大小" }, ge = { "Opacity", "Softness", "Size" };
+        for (int i = 0; i < 3; i++) glowNames[i].Text = en ? ge[i] : gz[i];
+        lblGlowColor.Text = T("灯光颜色", "Light color");
+        for (int i = 0; i < glowBtns.Count; i++)
+        {
+            MarkSwatch(glowBtns[i], L.GlowColor == i);
+            tip.SetToolTip(glowBtns[i], en ? LightForm.GlowEn[i] : LightForm.GlowZh[i]);
+        }
+
+        // 背景
+        LayoutNestPanel();
+        lblScene.Text = T("场景", "Scene");
+        lblWall.Text = T("墙纸颜色（温馨小屋）", "Wallpaper (cozy room)");
+        lblRoom.Text = T("房间里的装饰（可以多选）", "Room decorations (pick any)");
+        lblOut.Text = T("户外的装饰（草地 / 星空，可以多选）", "Outdoor decorations (meadow / night, pick any)");
+        lblWeather.Text = T("天气", "Weather");
+        lblBgNote.Text = T("背景跟着小窝一起移动，鼠标可以穿过它点到桌面。直接点温馨小屋里的落地灯也能开关。天气选「自动」时，会时不时下雨、打雷或下雪。",
+                           "The background moves with the bed and lets clicks through. Click the floor lamp in the cozy room to switch it. On Auto, it sometimes rains, storms or snows.");
+        for (int i = 0; i < sceneBtns.Count; i++)
+        {
+            NestLook li = L.Clone(); li.Bg = i;
+            int bs = Math.Max(2, S(80) / BackdropForm.BC);
+            Bitmap bmp = new Bitmap(BackdropForm.BC * bs, BackdropForm.BR * bs);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                if (i == 0) g.Clear(Color.FromArgb(245, 245, 248));
+                BackdropForm.Draw(g, bs, li, 1, 0);
+            }
+            Image old = sceneBtns[i].Image; sceneBtns[i].Image = bmp; if (old != null) old.Dispose();
+            sceneBtns[i].Text = en ? BackdropForm.SceneEn[i] : BackdropForm.SceneZh[i];
+            Mark(sceneBtns[i], L.Bg == i);
+        }
+        for (int i = 0; i < wallBtns.Count; i++)
+        {
+            MarkSwatch(wallBtns[i], L.Wall == i);
+            tip.SetToolTip(wallBtns[i], en ? BackdropForm.WallEn[i] : BackdropForm.WallZh[i]);
+        }
+        for (int i = 0; i < roomChks.Count; i++)
+        {
+            roomChks[i].Text = en ? BackdropForm.RoomEn[i] : BackdropForm.RoomZh[i];
+            roomChks[i].FlatAppearance.BorderColor = roomChks[i].Checked ? Accent : Line;
+        }
+        for (int i = 0; i < outChks.Count; i++)
+        {
+            outChks[i].Text = en ? BackdropForm.OutEn[i] : BackdropForm.OutZh[i];
+            outChks[i].FlatAppearance.BorderColor = outChks[i].Checked ? Accent : Line;
+        }
+        lblLight.Text = T("什么时候亮（天黑、下雨时会自动亮）", "When to light up (auto: at night or in bad weather)");
+        string[] lz = { "关闭", "自动", "一直开" }, le = { "Off", "Auto", "Always" };
+        for (int i = 0; i < lightBtns.Count; i++) { lightBtns[i].Text = en ? le[i] : lz[i]; Mark(lightBtns[i], L.Light == i); }
+        chkLamp.Text = L.LampOn ? T("落地灯：开着", "Floor lamp: on") : T("落地灯：关着", "Floor lamp: off");
+        chkLamp.FlatAppearance.BorderColor = L.LampOn ? Accent : Line;
+        for (int i = 0; i < weatherBtns.Count; i++)
+        {
+            weatherBtns[i].Text = en ? BackdropForm.WeatherEn[i] : BackdropForm.WeatherZh[i];
+            Mark(weatherBtns[i], L.Weather == i);
+        }
+
         UpdateSnap();
         nestPreview.Invalidate();
     }
@@ -3850,14 +6216,45 @@ class SettingsForm : Form
         PictureBox pb = (PictureBox)sender;
         int w = pb.ClientSize.Width, h = pb.ClientSize.Height;
         int sz = Math.Max(2, ((w - 8) / NestForm.NC) / 2 * 2);
+        if (pet.Look.Bg > 0) sz = Math.Max(2, (w / BackdropForm.BC) / 2 * 2);   // 有背景时整体缩小一点
         int nw = NestForm.NC * sz, nh = NestForm.NR * sz;
         int x = (w - nw) / 2, y = (h - nh) / 2 + sz;
-        using (Brush floor = new SolidBrush(Color.FromArgb(240, 226, 214)))
-            g.FillRectangle(floor, 0, y + nh, w, h - (y + nh));
+        if (pet.Look.Bg > 0)
+        {
+            int bw = BackdropForm.BC * sz, bh = BackdropForm.BR * sz;
+            int bx = (w - bw) / 2, by = (h - bh) / 2;
+            x = bx + (bw - nw) / 2; y = by + bh - nh;
+            using (Bitmap bb = new Bitmap(bw, bh))
+            {
+                using (Graphics bg = Graphics.FromImage(bb)) BackdropForm.Draw(bg, sz, pet.Look, pet.Weather, zt * 4);
+                ColorMatrix cm = new ColorMatrix(); cm.Matrix33 = pet.Look.BgAlpha / 100f;
+                using (ImageAttributes ia = new ImageAttributes())
+                {
+                    ia.SetColorMatrix(cm);
+                    g.DrawImage(bb, new Rectangle(bx, by, bw, bh), 0, 0, bw, bh, GraphicsUnit.Pixel, ia);
+                }
+            }
+        }
+        else
+            using (Brush floor = new SolidBrush(Color.FromArgb(240, 226, 214)))
+                g.FillRectangle(floor, 0, y + nh, w, h - (y + nh));
         GraphicsState st = g.Save();
         g.TranslateTransform(x, y);
         NestForm.DrawNest(g, sz, pet.Look, pv, (int[])pet.Outfit.Clone());
         g.Restore(st);
+        float dk = pet.PreviewDark;   // 预览里也把灯光叠上去，调滑块马上能看到
+        if (dk > 0 && pet.NestOn)
+        {
+            NestLook L = pet.Look;
+            string k = sz + "," + dk + "," + L.Bg + "," + L.GlowAlpha + "," + L.GlowSpread + "," + L.GlowSize + "," + L.GlowColor;
+            if (k != glowPrevKey)
+            {
+                if (glowPrev != null) glowPrev.Dispose();
+                NestLook l2 = L.Clone(); l2.RoomDecor &= ~128;
+                glowPrev = LightForm.Build(sz, l2, dk, false, 0); glowPrevKey = k;
+            }
+            g.DrawImage(glowPrev, x + nw / 2 - glowPrev.Width / 2, y + nh - glowPrev.Height, glowPrev.Width, glowPrev.Height);
+        }
         using (Brush zb = new SolidBrush(Color.FromArgb(120, 120, 150)))
             for (int i = 0; i < 3; i++)
                 if ((zt / 5) % 4 >= i)

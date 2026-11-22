@@ -8,7 +8,7 @@ A little pixel Claude that lives on your Windows desktop. Free, open source, jus
 
 ## 下载 / Download
 
-到右边的 **[Releases](../../releases/latest)** 下载 `ClaudeDeskTopPet.exe`（或 `ClaudeDeskTopPet-1.0.0.zip`），双击就能运行，不需要安装任何东西。
+到右边的 **[Releases](../../releases/latest)** 下载 `ClaudeDeskTopPet.exe`（或 `ClaudeDeskTopPet-2.0.0.zip`），双击就能运行，不需要安装任何东西。
 
 Grab `ClaudeDeskTopPet.exe` (or the zip) from **[Releases](../../releases/latest)** and double-click it. Nothing to install.
 
@@ -18,14 +18,18 @@ Grab `ClaudeDeskTopPet.exe` (or the zip) from **[Releases](../../releases/latest
 ## 能做的事 / Features
 
 - **基本操作**：左键点它跳一下；拖动能拎起来，拖到屏幕左右边缘会吸在墙上；右键打开菜单
-- **喂食**：16 种食物，辣椒、咖啡、柠檬、爆米花、汉堡、牛奶……各有动画；30 秒内连吃 3 个冰淇淋会被冻住
+- **摸头**：鼠标在它头上左右来回蹭就是摸头，它边走边被摸也会脸红冒爱心
+- **待机小动作**：想一想、溜溜球、喝热茶、蹦蹦跳跳、扫地、打招呼、打喷嚏……扒在墙上时也会挥手、打盹、晃腿、哼歌、偷吃饼干
+- **喂食**：36 种食物，分主食 / 小吃 / 甜点 / 水果 / 饮料，每种吃法都不一样（咖啡是喝的、面条用筷子嗦、薯条一根一根吃、龙虾一口吞）；还能配一份最多 3 样的套餐，它会坐下来慢慢吃
 - **玩游戏**：踢足球、毛线球、顶气球、扔飞盘、戳泡泡、激光笔
 - **洗澡**：花洒放水 → 肥皂搓澡 → 冲干净 → 浴巾擦干，沐浴露倒进水里会起泡泡
 - **装扮**：帽子、眼镜、围巾、外套，几十件随意搭配
-- **小窝**：5 种窝、8 种颜色、5 种花纹、9 种装饰、玩偶；困了会自己回窝睡觉，点一下才会醒
-- **惊喜**：每小时有 30% 的概率给你送一份小礼物
+- **小窝**：5 种窝、8 种颜色、5 种花纹、9 种装饰、玩偶；在窝里会敲代码、吃零食、看书、打游戏、看电影（猜猜是什么片）、听歌，困了就睡
+- **背景和灯光**：温馨小屋 / 草地 / 星空背景，窗外会下雨、打雷、下雪；夜里小窝会发暖光，落地灯可以点开关
+- **惊喜**：每小时有 30% 的概率给你送一份小礼物，点一下可以拆开
 - **双语**：中文 / English
 
+![idles](预览图/poses_idles.png)
 ![bath](预览图/poses_bath.png)
 ![nests](预览图/poses_nests.png)
 
